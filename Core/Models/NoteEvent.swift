@@ -13,6 +13,10 @@ struct NoteEvent: Identifiable {
     let timestamp: Date
 
     var state: NoteEventState {
+        if expected.isRest {
+            return played == nil ? .correct : .wrong
+        }
+
         guard let played else { return .missed }
         return played == expected.midiNote ? .correct : .wrong
     }

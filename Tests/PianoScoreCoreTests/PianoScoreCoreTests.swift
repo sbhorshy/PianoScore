@@ -14,6 +14,12 @@ final class PianoScoreCoreTests: XCTestCase {
         XCTAssertEqual(event.state, .wrong)
     }
 
+    func testNoteEventStateRestCorrectWhenUnplayed() {
+        let rest = Note(pitch: 0, duration: 1, isRest: true)
+        let event = NoteEvent(expected: rest, played: nil, timestamp: Date())
+        XCTAssertEqual(event.state, .correct)
+    }
+
     func testNoteEventStateMissed() {
         let note = Note(pitch: 60, duration: 1, isRest: false)
         let event = NoteEvent(expected: note, played: nil, timestamp: Date())
