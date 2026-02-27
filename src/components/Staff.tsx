@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type MouseEvent } from 'react'
 import { Note, Pitch } from '../types/music'
 
 interface StaffProps {
@@ -9,7 +9,7 @@ interface StaffProps {
 
 export function Staff({ notes, currentNoteIndex, onNoteClick }: StaffProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
-  const [canvasSize, setCanvasSize] = useState({ width: 800, height: 200 })
+  const [canvasSize] = useState({ width: 800, height: 200 })
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -115,7 +115,6 @@ export function Staff({ notes, currentNoteIndex, onNoteClick }: StaffProps) {
     noteIndex: number,
     size: { width: number; height: number }
   ) => {
-    const lineSpacing = 12
     const startY = size.height / 2 - 30
     const leftMargin = 60
     const noteSpacing = 40
@@ -124,6 +123,21 @@ export function Staff({ notes, currentNoteIndex, onNoteClick }: StaffProps) {
 
     ctx.fillStyle = 'rgba(0, 122, 204, 0.3)'
     ctx.fillRect(x - 15, startY - 15, 30, 80)
+  }
+
+  const handleCanvasClick = (event: MouseEvent<HTMLCanvasElement>) => {
+    if (!onNoteClick) return
+
+    const rect = event.currentTarget.getBoundingClientRect()
+    const clickX = event.clientX - rect.left
+    const leftMargin = 60
+    const noteSpacing = 40
+    const firstNoteX = leftMargin + 60
+    const noteIndex = Math.floor((clickX - firstNoteX + noteSpacing / 2) / noteSpacing)
+
+    if (noteIndex >= 0 && noteIndex < notes.length) {
+      onNoteClick(noteIndex)
+    }
   }
 
   const getNoteYPosition = (pitch: Pitch, startY: number, lineSpacing: number): number => {
@@ -138,6 +152,7 @@ export function Staff({ notes, currentNoteIndex, onNoteClick }: StaffProps) {
       ref={canvasRef}
       width={canvasSize.width}
       height={canvasSize.height}
+      onClick={handleCanvasClick}
       className="w-full bg-white rounded-lg shadow"
       style={{ maxWidth: '100%' }}
     />

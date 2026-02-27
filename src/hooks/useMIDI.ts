@@ -4,20 +4,19 @@ import { NoteEvent } from '../types/music'
 interface UseMIDIResult {
   isSupported: boolean
   isConnected: boolean
-  devices: WebMidi.MIDIInput[]
-  selectedDevice: WebMidi.MIDIInput | null
+  devices: MIDIInput[]
+  selectedDevice: MIDIInput | null
   error: string | null
-  connect: (device: WebMidi.MIDIInput) => void
+  connect: (device: MIDIInput) => void
   disconnect: () => void
   lastNoteEvent: NoteEvent | null
 }
 
 export function useMIDI(): UseMIDIResult {
-  const [midiAccess, setMidiAccess] = useState<WebMidi.MIDIAccess | null>(null)
   const [isSupported, setIsSupported] = useState(true)
   const [isConnected, setIsConnected] = useState(false)
-  const [devices, setDevices] = useState<WebMidi.MIDIInput[]>([])
-  const [selectedDevice, setSelectedDevice] = useState<WebMidi.MIDIInput | null>(null)
+  const [devices, setDevices] = useState<MIDIInput[]>([])
+  const [selectedDevice, setSelectedDevice] = useState<MIDIInput | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [lastNoteEvent, setLastNoteEvent] = useState<NoteEvent | null>(null)
 
@@ -31,34 +30,32 @@ export function useMIDI(): UseMIDIResult {
     navigator
       .requestMIDIAccess()
       .then((access) => {
-        setMidiAccess(access)
         updateDevices(access)
 
-        // Listen for device changes
         access.onstatechange = () => {
           updateDevices(access)
         }
       })
-      .catch((err) => {
+      .catch((err: Error) => {
         setError(`MIDI 访问失败: ${err.message}`)
       })
   }, [])
 
-  const updateDevices = (access: WebMidi.MIDIAccess) => {
-    const inputs: WebMidi.MIDIInput[] = []
+  const updateDevices = (access: MIDIAccess) => {
+    const inputs: MIDIInput[] = []
     access.inputs.forEach((input) => {
       inputs.push(input)
     })
     setDevices(inputs)
   }
 
-  const handleMIDIMessage = useCallback((event: WebMidi.MIDIMessageEvent) => {
+  const handleMIDIMessage = useCallback((event: MIDIMessageEvent) => {
+    if (!event.data) return
+
     const [status, data1, data2] = event.data
     const command = status & 0xf0
-    const channel = status & 0x0f
 
     if (command === 0x90 && data2 > 0) {
-      // Note On
       const noteEvent: NoteEvent = {
         id: crypto.randomUUID(),
         pitch: {
@@ -72,7 +69,6 @@ export function useMIDI(): UseMIDIResult {
       }
       setLastNoteEvent(noteEvent)
     } else if (command === 0x80 || (command === 0x90 && data2 === 0)) {
-      // Note Off
       const noteEvent: NoteEvent = {
         id: crypto.randomUUID(),
         pitch: {
@@ -89,7 +85,7 @@ export function useMIDI(): UseMIDIResult {
   }, [])
 
   const connect = useCallback(
-    (device: WebMidi.MIDIInput) => {
+    (device: MIDIInput) => {
       if (selectedDevice) {
         selectedDevice.onmidimessage = null
       }

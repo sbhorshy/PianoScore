@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
-import { Score, Note, NoteEvent, MatchResult } from '../types/music'
+import { Score, NoteEvent, MatchResult } from '../types/music'
 
 interface UsePracticeResult {
   currentNoteIndex: number
