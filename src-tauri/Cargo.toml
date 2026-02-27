@@ -1,0 +1,21 @@
+[package]
+name = "pianoscore-app"
+version = "0.1.0"
+description = "AI-powered piano score practice application"
+authors = ["you"]
+license = "MIT"
+repository = ""
+edition = "2021"
+rust-version = "1.70"
+
+[build-dependencies]
+tauri-build = { version = "1.5.0", features = [] }
+
+[dependencies]
+tauri = { version = "1.5.0", features = ["shell-open", "dialog-open", "dialog-save", "fs-read-file", "fs-write-file"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+[features]
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
