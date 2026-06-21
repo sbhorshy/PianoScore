@@ -1,0 +1,48 @@
+# Dependencies
+node_modules/
+pianoscore-api/venv/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Build
+dist/
+src-tauri/target/
+
+# Test artifacts
+playwright-report/
+test-results/
+test-screenshots/
+.playwright-mcp/
+
+# Local databases
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.db
+
+# IDE
+.vscode/
+.idea/
+*.iml
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Environment
+.env
+.env.local
+
+# AI tooling config / agent working files (local only)
+.claude/
+.kiro/
+CLAUDE.md
