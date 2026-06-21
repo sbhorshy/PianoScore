@@ -73,3 +73,12 @@ interface NoteTarget {
 - usePractice hook — 完全不变
 - useMIDI hook — 完全不变
 - API 客户端 — 只需新增 practiceMode 参数
+
+## 实现注记（2026-06 补充）
+
+> 以下记录本 ADR 写作时的计划与最终实现的偏差，正文保持原样以保留决策历史。
+
+- **`score_notes` 表最终未创建**：`hand` 信息没有进入数据库。最终架构（详见 ADR 0003）让 targets 在前端运行时从 MusicXML 经 OSMD cursor walk 提取，`hands[]` 作为 `ScoringTarget` 的运行时字段存在，服务端只存原始 `sourceXml`。
+- **MusicXmlParser 不提取 hand**：`<staff>` 标签的解析改在前端 `extractTargets.ts` 完成（staff 1 = right, staff 2 = left），后端解析器只负责元数据（title/composer/tempo）。
+- **`sessions.practiceMode` 列**：按计划新增，已落地。
+- **过滤层位置**：计划在 PracticePage，实际实现延续该决策（`rangeFilter.ts` + PracticePage 组合过滤）。

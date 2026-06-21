@@ -45,6 +45,7 @@ PianoScore/
 ├── app/                               # ✅ 活跃前端 (React 19 + Vite 7)
 │   ├── package.json
 │   ├── vite.config.ts                 # @/ 别名, /api 代理 → :8000
+│   ├── index.html                     # Vite 入口 HTML
 │   ├── vitest.config.ts               # 测试配置: environment 'node', @/ 别名
 │   ├── tailwind.config.js             # shadcn/ui 主题, darkMode "class"
 │   └── src/
@@ -52,45 +53,54 @@ PianoScore/
 │       ├── App.tsx                    # HashRouter + Layout + 路由
 │       ├── components/
 │       │   ├── Layout.tsx             # 页面框架: header + nav + AnimatePresence
-│       │   ├── Navigation.tsx         # 底部导航栏
+│       │   ├── Navigation.tsx         # 顶部导航栏 (Library / 导入曲谱 / Settings)
 │       │   ├── OsmdScore.tsx          # 🎵 OSMD 曲谱渲染器 (SVG, memo)
 │       │   ├── VirtualKeyboard.tsx    # 屏幕钢琴键盘 (6 种视觉状态 + 手部颜色)
-│       │   └── ui/                    # 14+ 个 shadcn/ui 组件
+│       │   └── ui/                    # 13 个 shadcn/ui 组件 (button/card/input/select/dialog/...)
 │       ├── services/
-│       │   ├── osmd.ts                # 🎵 OsmdService 类 (OSMD 封装, ~340 行)
+│       │   ├── osmd.ts                # 🎵 OsmdService 类 (OSMD 封装, ~380 行)
 │       │   ├── audio.ts               # 🔊 AudioOutput 接口 + ToneJsOutput (@tonejs/piano 采样) + WebAudioSynth (振荡器合成) + MidiOutput
 │       │   ├── extractTargets.ts      # 纯函数: 从 cursor 数据提取 ScoringTarget
+│       │   ├── extractTargets.test.ts # 11 个连音线 (Tie) 提取测试 (与 __tests__/ 版分离)
 │       │   └── __tests__/
-│       │       ├── extractTargets.test.ts  # 8 个提取逻辑测试
-│       │       └── audio.test.ts       # 40 个音频测试 (ToneJsOutput + WebAudioSynth + MidiOutput + midiToNoteName)
+│       │       ├── extractTargets.test.ts  # 9 个提取逻辑测试 (staff→hand, rest, duration ×4)
+│       │       ├── audio.test.ts           # 42 个音频测试 (ToneJsOutput + WebAudioSynth + MidiOutput + midiToNoteName)
+│       │       └── realvalue-units.test.ts # 7 个 RealValue→durationBeats ×4 转换回归
 │       ├── hooks/
 │       │   ├── usePractice.ts         # 练习状态机 (双状态: PositionState + ScoringState, noteOn/noteOff)
 │       │   ├── usePlayback.ts         # 🔊 自动回放 hook (useClock + tempoTick 驱动光标; buildNoteEvents 事件表驱动音频, 复音延音; 无 onsetBeat 时回退旧的按 index 发声)
+│       │   ├── useClock.ts            # rAF 驱动的时钟 hook (跟练/听音模式节拍源)
 │       │   ├── useScore.ts            # 获取单首曲谱 (含 sourceXml)
 │       │   ├── useScores.ts           # 曲谱列表 + 导入 + 删除
 │       │   ├── useSettings.ts         # 设置持久化 (localStorage)
-│       │   ├── useMIDI.ts             # Web MIDI API 接入
+│       │   ├── useMIDI.ts             # Web MIDI API 接入 (输入 + 输出)
 │       │   └── __tests__/
-│       │       └── usePractice.test.ts     # 6 个 hook 测试 (jsdom)
+│       │       ├── usePractice.test.ts     # 13 个 hook 测试 (free/follow/listen 状态推进, jsdom)
+│       │       ├── usePlayback.test.ts     # 12 个回放测试 (play/stop/和弦/空 targets/null output)
+│       │       ├── listen-mode.test.ts     # 9 个听音模式时序测试 (含休止符)
+│       │       ├── useClock.test.ts        # 6 个时钟测试 (rAF 时序/elapsed/unmount 清理)
+│       │       └── fast-tempo.test.ts      # 5 个快速节拍回归测试
 │       ├── lib/
 │       │   ├── api.ts                 # API 客户端 (所有 /api 调用)
 │       │   └── utils.ts               # shadcn/ui 工具
 │       ├── pages/
-│       │   ├── LibraryPage.tsx        # /library — 曲谱库
+│       │   ├── LibraryPage.tsx        # /library — 曲谱库 (搜索 + 作曲家筛选 + 排序 + 删除)
 │       │   ├── PracticePage.tsx       # /practice/:id — 练习页
-│       │   ├── ImportPage.tsx         # /import — 上传页
+│       │   ├── AIScanPage.tsx         # /import — 曲谱导入 (MusicXML 上传, 拖拽 + 进度)
 │       │   └── SettingsPage.tsx       # /settings — 设置页
 │       ├── scoring/
 │       │   ├── types.ts               # ScoringConfig, ScoringState (含 heldNotes), Judgment
-│       │   ├── engine.ts              # 纯函数评分引擎 (judgeNoteOn, judgeNoteOff)
-│       │   ├── position.ts            # PositionState 接口 + 纯函数 (advancePosition, handleJudgment)
+│       │   ├── engine.ts              # 纯函数评分引擎 (judgeNoteOn, judgeNoteOff, settleTarget)
+│       │   ├── position.ts            # PositionState 接口 + 纯函数 (advancePosition, handleJudgment, tempoTick)
 │       │   ├── playbackSchedule.ts     # buildNoteEvents: ScoringTarget[] → 排序的 noteOn/off 事件表 (复音延音)
 │       │   ├── rangeFilter.ts         # MeasureRange 接口 + filterTargetsByRange 纯函数
 │       │   ├── timeline.ts            # TargetTimeline 接口 + buildTimeline 函数
-│       │   ├── engine.test.ts         # 17 个评分测试
-│       │   ├── position.test.ts       # 12 个位置追踪测试
+│       │   ├── engine.test.ts         # 40 个评分测试
+│       │   ├── position.test.ts       # 24 个位置追踪测试
 │       │   ├── rangeFilter.test.ts    # 8 个范围过滤测试
-│       │   └── timeline.test.ts       # 5 个时间线测试
+│       │   ├── timeline.test.ts       # 5 个时间线测试
+│       │   └── __tests__/
+│       │       └── playbackSchedule.test.ts  # 8 个复音回归测试
 │       └── types/
 │           └── music.ts               # 核心类型: ScoringTarget, Hand, PracticeMode, PracticeStyle, NoteEvent
 │
@@ -123,12 +133,12 @@ PianoScore/
 ├── e2e/                               # Playwright E2E 测试
 │   └── practice-flow.spec.ts          # 5 个 E2E 测试 (1 个 skipped)
 │
-├── src/                               # ⚠️ 遗留前端 (React 18, 仅参考)
-├── pianoscore-api/                    # ⚠️ 废弃后端 (Python/FastAPI)
 └── src-tauri/                         # 🖥️ Tauri v1 桌面端壳
     ├── Cargo.toml                     # Rust 依赖, bundle id: com.pianoscore.app
     └── tauri.conf.json                # 窗口 1200x800, 引用 app/ 构建
 ```
+
+> ℹ️ 历史遗留：仓库早期曾有根目录 `index.html`、`src/` (React 18 旧前端) 与 `pianoscore-api/` (Python/FastAPI 旧后端)，均已在后续重构中移除。活跃代码仅在 `app/`、`server/`、`src-tauri/`、`e2e/`。
 
 ---
 
@@ -139,12 +149,13 @@ PianoScore/
 │                        前端 (app/)                               │
 │                                                                  │
 │  ┌──────────┐   ┌──────────┐   ┌──────────┐   ┌──────────┐    │
-│  │ Library  │   │ Import   │   │ Practice │   │ Settings │    │
+│  │ Library  │   │ AIScan   │   │ Practice │   │ Settings │    │
 │  │ Page     │   │ Page     │   │ Page     │   │ Page     │    │
 │  └────┬─────┘   └────┬─────┘   └────┬─────┘   └────┬─────┘    │
 │       │              │              │               │            │
 │  useScores()    api.import    useScore()       useSettings()    │
 │                                usePractice()    useMIDI()        │
+│                                usePlayback()                    │
 │                                useMIDI()                        │
 │                                   │                              │
 │                    ┌──────────────┼──────────────┐               │
@@ -345,10 +356,12 @@ VirtualKeyboard: onClick → onNoteOn(midi) → handleNoteOn(midi); heldNotes/ac
 | 路由 | 组件 | 功能 |
 |------|------|------|
 | `/` | `Navigate → /library` | 默认重定向 |
-| `/library` | `LibraryPage` | 浏览/删除曲谱 |
-| `/import` | `ImportPage` | MusicXML 文件上传 (拖拽 + 进度) |
-| `/practice/:scoreId` | `PracticePage` | 实时练习 + 评分 + OSMD 渲染 |
-| `/settings` | `SettingsPage` | MIDI 设备 + 练习设置 |
+| `/library` | `LibraryPage` | 浏览/搜索/筛选/排序/删除曲谱 |
+| `/import` | `AIScanPage` | MusicXML 文件上传 (拖拽 + 进度) |
+| `/practice/:scoreId` | `PracticePage` | 实时练习 + 评分 + OSMD 渲染 + 三种推进模式 |
+| `/settings` | `SettingsPage` | MIDI 设备 + 音频输出 + 练习设置 |
+
+> 注：`/import` 路由挂载的组件名为 `AIScanPage`（历史命名），实际承载 MusicXML 导入功能，并非图像/AI 识别。
 
 ### 4.6 OSMD 曲谱渲染系统 (services/)
 
@@ -498,25 +511,27 @@ npm run tauri-build   # 生产构建
 
 ## 7. 测试
 
-### 前端测试 (176 个)
+### 前端测试 (199 个)
 
 | 文件 | 测试数 | 覆盖范围 |
 |------|--------|----------|
 | `app/src/scoring/engine.test.ts` | 40 | judgeNoteOn/judgeNoteOff/settleTarget/summarize（含位置追踪、heldNotes、和弦窗口） |
-| `app/src/scoring/position.test.ts` | 27 | initPositionState、advancePosition、handleJudgment、tempoTick、buildTargetTimeline、isPositionComplete |
-| `app/src/scoring/timeline.test.ts` | 5 | buildTimeline 函数、TargetTimeline 接口 |
-| `app/src/scoring/__tests__/playbackSchedule.test.ts` | 9 | 复音回归: 真实 onset 时间线(非累加)、归一化、buildNoteEvents 延音事件表、休止符、回退 |
-| `app/src/scoring/rangeFilter.test.ts` | 8 | measureNumber 范围过滤、null range、边界情况 |
-| `app/src/services/__tests__/extractTargets.test.ts` | 9 | staff→hand 映射、rest 空条目、duration ×4 转换、hands 去重 |
-| `app/src/services/extractTargets.test.ts` | 6 | 连音线 (Tie): 起音承载合并时值、延续音剔除、纯延续位置空占位、3 音连音链、部分连音和弦、同音反复不误判 |
-| `app/src/services/__tests__/realvalue-units.test.ts` | 7 | RealValue→durationBeats ×4 转换回归、端到端时序（120/60 BPM） |
-| `app/src/services/__tests__/audio.test.ts` | 40 | ToneJsOutput + WebAudioSynth + MidiOutput + midiToNoteName |
+| `app/src/services/__tests__/audio.test.ts` | 42 | ToneJsOutput + WebAudioSynth + MidiOutput + midiToNoteName |
+| `app/src/scoring/position.test.ts` | 24 | initPositionState、advancePosition、handleJudgment、tempoTick、buildTargetTimeline、isPositionComplete |
 | `app/src/hooks/__tests__/usePractice.test.ts` | 13 | free/follow/listen 模式状态推进、settleTarget、settlements |
 | `app/src/hooks/__tests__/usePlayback.test.ts` | 12 | 自动回放 (play/stop/noteOn/noteOff/和弦/空 targets/null output/stoppedRef) |
+| `app/src/services/extractTargets.test.ts` | 11 | 连音线 (Tie): 起音承载合并时值、延续音剔除、纯延续位置空占位、3 音连音链、部分连音和弦、同音反复不误判 |
 | `app/src/hooks/__tests__/listen-mode.test.ts` | 9 | listen 模式回放时序、休止符（开头/中间/结尾/连续）、混合时值 |
+| `app/src/services/__tests__/extractTargets.test.ts` | 9 | staff→hand 映射、rest 空条目、duration ×4 转换、hands 去重 |
+| `app/src/scoring/__tests__/playbackSchedule.test.ts` | 8 | 复音回归: 真实 onset 时间线(非累加)、归一化、buildNoteEvents 延音事件表、休止符、回退 |
+| `app/src/scoring/rangeFilter.test.ts` | 8 | measureNumber 范围过滤、null range、边界情况 |
+| `app/src/services/__tests__/realvalue-units.test.ts` | 7 | RealValue→durationBeats ×4 转换回归、端到端时序（120/60 BPM） |
 | `app/src/hooks/__tests__/useClock.test.ts` | 6 | rAF 时序、elapsed 递增、tempo 重置、unmount 清理 |
+| `app/src/scoring/timeline.test.ts` | 5 | buildTimeline 函数、TargetTimeline 接口 |
+| `app/src/hooks/__tests__/fast-tempo.test.ts` | 5 | 快速节拍回归（高 BPM 下时序不漂移） |
 
-前端 vitest 配置: `app/vitest.config.ts`（默认 environment: 'node'）。hook 测试使用 `@vitest-environment jsdom` 逐文件覆盖。
+> 合计 199 个测试。前端 vitest 配置: `app/vitest.config.ts`（默认 environment: 'node'）。hook 测试使用 `@vitest-environment jsdom` 逐文件覆盖。
+> 注意 `extractTargets.test.ts` 同时存在两份：`services/extractTargets.test.ts`（连音线专项，11 个）和 `services/__tests__/extractTargets.test.ts`（基础提取，9 个）。
 
 ### 后端测试 (16 个)
 
@@ -546,22 +561,23 @@ E2E 配置: `playwright.config.ts`，`reuseExistingServer: true`（需手动启�
 | 需求 | 标题 | 状态 |
 |------|------|------|
 | REQ 1 | MusicXML 导入 (可扩展) | ✅ 完成 |
-| REQ 1a | 导入页面 UI | ✅ 完成 |
+| REQ 1a | 导入页面 UI | ✅ 完成 (AIScanPage，路由 `/import`) |
 | REQ 2 | MIDI 练习 + 多音评分 | ✅ 完成 (音高匹配) |
 | REQ 3 | 曲谱库 CRUD | ✅ 完成 |
-| REQ 3a | 库搜索/筛选/排序/删除 | ⬜ 待实现 |
+| REQ 3a | 库搜索/筛选/排序/删除 | ✅ 完成 (LibraryPage：搜索框 + 作曲家筛选 + 标题/时间排序 + 删除确认) |
 | REQ 4 | 练习历史 + 进度 | ✅ 后端完成, ⬜ 前端展示待做 |
 | REQ 5 | 设置持久化 | ✅ 完成 |
 | REQ 6 | 非功能需求 | ⬜ 大部分待做 |
 
 ### 已知限制
 
-1. **音符着色 Bug** — `getSVGGElement()` 返回 null，导致当前/过去音符无法区分颜色
-2. **和弦窗口 Bug** — 错音不清空 `pressedInWindow`（标记 `@known-bug`）
-3. **仅解析第一声部** — 多声部/多行五线谱暂不支持
-4. **无节奏评分** — MVP 阶段仅做音高匹配
-5. **无认证** — 所有端点开放
-6. **无分页** — 列表端点返回全量
+1. **音符着色 Bug** — `getSVGGElement()` 返回 null，导致当前/过去音符无法区分颜色（E2E phase 2 视觉反馈测试受阻）
+2. **仅解析第一声部** — 多声部/多行五线谱暂不支持
+3. **无节奏评分** — MVP 阶段仅做音高匹配（基础设施已具备：noteOff tracking + 时钟系统，见 TODO.md 未来功能）
+4. **无认证** — 所有端点开放
+5. **无分页** — 列表端点返回全量
+
+> 历史"和弦窗口 bug"（错音不清空 `pressedInWindow`）已在 noteOff tracking 重构中修复（见 ADR 0002），不再列入。
 
 ---
 
@@ -589,7 +605,7 @@ cd app && npm install                # 安装依赖
 cd app && npm run dev                # Vite 开发服务器 :5173
 cd app && npm run build              # tsc + Vite 生产构建
 cd app && npm run lint               # ESLint
-cd app && npx vitest run             # 运行所有前端测试 (45 个)
+cd app && npx vitest run             # 运行所有前端测试 (199 个)
 cd app && npx vitest                 # 测试 watch 模式
 cd app && npx vitest run src/scoring/engine.test.ts  # 单个测试文件
 

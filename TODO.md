@@ -3,6 +3,19 @@
 > 2026-05-31 grilling session 确认的功能规划和实现顺序。
 > 架构决策详见 `docs/adr/0002-position-tracker-separation.md`。
 
+## 当前进度总览（2026-06 更新）
+
+| 阶段 | 内容 | 状态 |
+|------|------|------|
+| Step 0 | 重构 — Position Tracker 分离 | ✅ 完成（E2E 行为验证仍待补） |
+| Step 1A | noteOff 追踪 + 虚拟键盘持音显示 | ✅ 完成 |
+| Step 1B | 光标 + 时钟系统 | ✅ 完成 |
+| Step 2A | 听音模式 | ✅ 完成 |
+| Step 2B | 跟练模式 | ✅ 完成 |
+| Step 3 | 小节范围选择 + 循环 | ✅ 完成（拖拽选择延后） |
+
+**核心路线图已全部落地。** 下方"未来功能（未排期）"为下一步候选。详细实现与测试覆盖见 [CODEBASE_SUMMARY.md](./CODEBASE_SUMMARY.md)。
+
 ## 实现路线图
 
 ### Step 0: 重构 — Position Tracker 分离
