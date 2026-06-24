@@ -35,7 +35,7 @@
 | `LICENSE-THIRD-PARTY.md` | 新建 | AGPL 合规声明 |
 | `LICENSES/AGPL-3.0.txt` | 新建 | AGPL 全文 |
 | `README.md` | 修改 | 第三方组件章节 |
-| `LICENSE` | 修改 | MIT 声明 + 第三方指引 |
+| `LICENSE` | 新建 | 项目 MIT 许可证 + 第三方指引（仓库当前无 LICENSE 文件，本任务一并补建） |
 
 ---
 
@@ -52,7 +52,7 @@ OcrEngine 读 Audiveris 的 `.mxl` 输出需要复用现有的 ZIP 解压和元�
 在 `musicxml.test.ts` 顶部 import 区追加，并在 `describe('MusicXmlParser')` 块**之后**追加新 describe：
 
 ```typescript
-import { extractMxl, isZip, extractMusicXmlMetadata } from './musicxml'
+import { isZip, extractMusicXmlMetadata } from './musicxml'
 
 describe('exported musicxml helpers', () => {
   it('isZip detects PK magic bytes', () => {
@@ -299,9 +299,9 @@ export function getFullScore(db: Db, id: string): FullScore | null {
     await importScore()
     const res = await test.app.request('/api/scores')
     expect(res.status).toBe(200)
-    const body = (await res.json()) as Array<Record<string, unknown>>
-    expect(body[0]).toHaveProperty('sourceFormat')
-    expect(body[0].sourceFormat).toBe('musicxml')
+    const body = (await res.json()) as { scores: Array<Record<string, unknown>> }
+    expect(body.scores[0]).toHaveProperty('sourceFormat')
+    expect(body.scores[0].sourceFormat).toBe('musicxml')
   })
 
   it('full score returns sourceFormat field', async () => {
@@ -422,6 +422,13 @@ describe('OcrTaskRepo', () => {
     expect(repo.delete(id)).toBe(true)
     expect(repo.get(id)).toBeUndefined()
   })
+
+  it('updates inputPath after creation', () => {
+    const id = repo.create({ inputFormat: 'pdf', inputFileName: 'a.pdf' })
+    expect(repo.get(id)!.inputPath).toBeNull()
+    repo.updateInputPath(id, '/tmp/a.pdf')
+    expect(repo.get(id)!.inputPath).toBe('/tmp/a.pdf')
+  })
 })
 ```
 
@@ -434,7 +441,7 @@ Expected: FAIL — "Cannot find module '../ocrTaskRepo.js'"
 
 ```typescript
 // server/src/db/ocrTaskRepo.ts
-import { eq, or, isNull } from 'drizzle-orm'
+import { eq, or } from 'drizzle-orm'
 import { randomUUID } from 'node:crypto'
 import type { Db } from './client.js'
 import { ocrTasks } from './schema.js'
@@ -493,6 +500,11 @@ export class OcrTaskRepo {
     return this.db.select().from(ocrTasks)
       .where(or(eq(ocrTasks.status, 'pending'), eq(ocrTasks.status, 'running')))
       .get() ?? null
+  }
+
+  // reservation 后写完临时文件回填路径
+  updateInputPath(id: string, inputPath: string): void {
+    this.db.update(ocrTasks).set({ inputPath }).where(eq(ocrTasks.id, id)).run()
   }
 
   delete(id: string): boolean {
@@ -715,18 +727,21 @@ Expected: FAIL — "Cannot find module '../engine.js'"
 
 ```typescript
 // server/src/ocr/engine.ts
-import { spawn, spawnSync, type ChildProcess } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
+import type { ChildProcess } from 'node:child_process'
 import { promises as fs } from 'node:fs'
 import path from 'node:path'
 import { XMLParser } from 'fast-xml-parser'
 import { extractMxl, isZip, extractMusicXmlMetadata } from '../parsing/musicxml.js'
-import { OcrError, type ErrorCode } from './errors.js'
+import { OcrError } from './errors.js'
+import type { ErrorCode } from './errors.js'
 import type { OcrConfig } from './config.js'
 
 export interface RecognizeInput {
   taskId: string
   filePath: string
   format: 'pdf' | 'image'
+  fallbackTitle: string  // 上传文件名去扩展名，用于无标题乐谱的元数据回退
 }
 
 export interface OcrResult {
@@ -746,6 +761,7 @@ const xmlParser = new XMLParser({ ignoreAttributes: false, attributeNamePrefix: 
 
 export class OcrEngine {
   private availableCache: HealthResult | null = null
+  private currentChild: ChildProcess | null = null
 
   constructor(private config: OcrConfig) {}
 
@@ -826,16 +842,21 @@ export class OcrEngine {
       throw new OcrError('low_confidence', 'Audiveris output has 0 notes')
     }
 
-    // 复用元数据提取，fallback 用文件名（去扩展名）
-    const fallbackTitle = stripExt(input.filePath)
-    const meta = extractMusicXmlMetadata(root, xmlText, fallbackTitle)
+    // 复用元数据提取，fallback 用调用方传入的上传文件名
+    const meta = extractMusicXmlMetadata(root, xmlText, input.fallbackTitle)
 
     return { musicXml: xmlText, meta }
+  }
+
+  // 外部（OcrRunner.cancel）终止运行中的进程
+  cancel(): void {
+    this.currentChild?.kill('SIGKILL')
   }
 
   // 包裹 child 进程：超时 kill + exit code 校验 + stderr 封顶
   // 抽成方法便于子类/测试覆盖
   protected async runWithTimeout(child: ChildProcess): Promise<void> {
+    this.currentChild = child
     return new Promise((resolve, reject) => {
       let stderrBuf = ''
       let killed = false
@@ -884,11 +905,6 @@ function countNotes(root: Record<string, unknown>): number {
   }
   return count
 }
-
-function stripExt(filePath: string): string {
-  const base = path.basename(filePath)
-  return base.replace(/\.[^.]+$/, '')
-}
 ```
 
 - [ ] **Step 4: 跑 healthCheck 测试确认通过**
@@ -922,22 +938,25 @@ import { EventEmitter } from 'node:events'
 import os from 'node:os'
 
 // helper: 创建 mock child + 模拟 outDir 文件
-function mockSpawn(opts: {
-  exitCode?: number
-  outFiles?: Record<string, string | Buffer>  // fileName -> content
-  delayMs?: number
-}) {
-  const child = new EventEmitter() as any
-  ;(child as any).stderr = new EventEmitter()
-  ;(child as any).kill = vi.fn()
+// outFiles 写到与 recognize 实现读取一致的目录：path.dirname(filePath)/out
+async function mockSpawn(
+  filePath: string,
+  opts: {
+    exitCode?: number
+    outFiles?: Record<string, string | Buffer>  // fileName -> content
+    delayMs?: number
+  },
+) {
+  const child = new EventEmitter() as never as import('node:child_process').ChildProcess
+  ;(child as unknown as { stderr: EventEmitter }).stderr = new EventEmitter()
+  ;(child as unknown as { kill: unknown }).kill = vi.fn()
 
   vi.mocked(childProcess.spawn).mockImplementation(() => child)
 
-  // 异步写 outDir + emit close
   setTimeout(async () => {
     if (opts.outFiles) {
-      const tmpRoot = path.join(os.tmpdir(), 'pianoscore-ocr-test')
-      const outDir = path.join(tmpRoot, 'out')
+      // 关键：写到实现实际读取的目录 dirname(filePath)/out
+      const outDir = path.join(path.dirname(filePath), 'out')
       await fs.rm(outDir, { recursive: true, force: true })
       await fs.mkdir(outDir, { recursive: true })
       for (const [name, content] of Object.entries(opts.outFiles)) {
@@ -962,50 +981,53 @@ const NOTE_XML = `<?xml version="1.0"?>
 describe('OcrEngine.recognize', () => {
   beforeEach(() => vi.clearAllMocks())
 
+  // 用唯一临时文件路径，确保 outDir 真实可写且 mock 与实现读到同一目录
+  const filePath = path.join(os.tmpdir(), `pianoscore-engine-test/input.pdf`)
+
   it('parses .xml output and extracts meta', async () => {
     vi.spyOn(fs, 'access').mockResolvedValue(undefined) // healthCheck jar
-    mockSpawn({ outFiles: { 'input.xml': NOTE_XML } })
+    await mockSpawn(filePath, { outFiles: { 'input.xml': NOTE_XML } })
 
     const engine = new OcrEngine(validConfig)
     const result = await engine.recognize({
-      taskId: 't1', filePath: '/tmp/x/某曲谱.pdf', format: 'pdf',
+      taskId: 't1', filePath, format: 'pdf', fallbackTitle: '某曲谱',
     })
     expect(result.meta.title).toBe('OCR Title')
     expect(result.musicXml).toContain('<score-partwise')
   })
 
-  it('uses file name as fallback title when XML has no title', async () => {
+  it('uses fallbackTitle when XML has no title', async () => {
     vi.spyOn(fs, 'access').mockResolvedValue(undefined)
     const noTitleXml = NOTE_XML.replace(
       /<work>.*?<\/work>/, '',
     )
-    mockSpawn({ outFiles: { 'input.xml': noTitleXml } })
+    await mockSpawn(filePath, { outFiles: { 'input.xml': noTitleXml } })
 
     const engine = new OcrEngine(validConfig)
     const result = await engine.recognize({
-      taskId: 't1', filePath: '/tmp/x/月光奏鸣曲.pdf', format: 'pdf',
+      taskId: 't1', filePath, format: 'pdf', fallbackTitle: '月光奏鸣曲',
     })
     expect(result.meta.title).toBe('月光奏鸣曲')
   })
 
   it('throws engine_crash on non-zero exit', async () => {
     vi.spyOn(fs, 'access').mockResolvedValue(undefined)
-    const child = mockSpawn({ exitCode: 1 })
-    ;(child.stderr as EventEmitter).emit('data', Buffer.from('boom'))
+    const child = await mockSpawn(filePath, { exitCode: 1 })
+    ;((child as unknown as { stderr: EventEmitter }).stderr).emit('data', Buffer.from('boom'))
 
     const engine = new OcrEngine(validConfig)
     await expect(engine.recognize({
-      taskId: 't1', filePath: '/tmp/x.pdf', format: 'pdf',
+      taskId: 't1', filePath, format: 'pdf', fallbackTitle: 'x',
     })).rejects.toThrow(/engine_crash/)
   })
 
   it('throws no_output when outDir empty', async () => {
     vi.spyOn(fs, 'access').mockResolvedValue(undefined)
-    mockSpawn({ outFiles: {} })
+    await mockSpawn(filePath, { outFiles: {} })
 
     const engine = new OcrEngine(validConfig)
     await expect(engine.recognize({
-      taskId: 't1', filePath: '/tmp/x.pdf', format: 'pdf',
+      taskId: 't1', filePath, format: 'pdf', fallbackTitle: 'x',
     })).rejects.toThrow(/no_output/)
   })
 
@@ -1016,11 +1038,11 @@ describe('OcrEngine.recognize', () => {
   <part-list><score-part id="P1"><part-name>Piano</part-name></score-part></part-list>
   <part id="P1"><measure number="1"><attributes><divisions>1</divisions></attributes></measure></part>
 </score-partwise>`
-    mockSpawn({ outFiles: { 'input.xml': emptyXml } })
+    await mockSpawn(filePath, { outFiles: { 'input.xml': emptyXml } })
 
     const engine = new OcrEngine(validConfig)
     await expect(engine.recognize({
-      taskId: 't1', filePath: '/tmp/x.pdf', format: 'pdf',
+      taskId: 't1', filePath, format: 'pdf', fallbackTitle: 'x',
     })).rejects.toThrow(/low_confidence/)
   })
 })
@@ -1029,7 +1051,44 @@ describe('OcrEngine.recognize', () => {
 - [ ] **Step 2: 跑测试确认通过（recognize 实现已在 Task 5 Step 3 完成）**
 
 Run: `cd server && npx vitest run src/ocr/__tests__/engine.test.ts`
-Expected: PASS — 全部 8 个测试（3 healthCheck + 5 recognize）
+Expected: PASS — 全部 9 个测试（3 healthCheck + 6 recognize）
+
+- [ ] **Step 2b: 加 .mxl 主路径测试（Audiveris 默认输出格式）**
+
+`.mxl` 是压缩 MusicXML（ZIP）。测试需构造一个真实可被 `extractMxl()` 解压的 zip。用 fflate 的 `zipSync` 现场打包：
+
+在 engine.test.ts 顶部 import 区追加：
+
+```typescript
+import { zipSync, strToU8 } from 'fflate'
+```
+
+在 `describe('OcrEngine.recognize')` 块末尾追加：
+
+```typescript
+  it('parses .mxl (zipped) output — Audiveris default format', async () => {
+    vi.spyOn(fs, 'access').mockResolvedValue(undefined)
+    // 构造符合 .mxl 规范的 zip：META-INF/container.xml + 根文档
+    const containerXml = `<?xml version="1.0"?>
+<container><rootfiles><rootfile full-path="score.xml"/></rootfiles></container>`
+    const zip = zipSync({
+      'META-INF/container.xml': strToU8(containerXml),
+      'score.xml': strToU8(NOTE_XML),
+    })
+    await mockSpawn(filePath, { outFiles: { 'input.mxl': Buffer.from(zip) } })
+
+    const engine = new OcrEngine(validConfig)
+    const result = await engine.recognize({
+      taskId: 't1', filePath, format: 'pdf', fallbackTitle: '某曲谱',
+    })
+    expect(result.meta.title).toBe('OCR Title')
+    expect(result.musicXml).toContain('<score-partwise')
+    expect(result.musicXml).toContain('C</step>')  // note 解压后可读
+  })
+```
+
+Run: `cd server && npx vitest run src/ocr/__tests__/engine.test.ts`
+Expected: PASS — 10 个测试
 
 - [ ] **Step 3: typecheck**
 
@@ -1099,23 +1158,34 @@ function mockEngine(result: { meta: any; musicXml: string } | OcrError) {
 describe('OcrRunner', () => {
   let close: () => void
   let repo: OcrTaskRepo
+  let db: ReturnType<typeof makeDb>['db']
 
   beforeEach(() => {
     const t = makeDb()
-    repo = new OcrTaskRepo(t.db)
+    db = t.db
+    repo = new OcrTaskRepo(db)
     close = t.close
-    // 暂存到全局供各 it 使用
-    ;(globalThis as any).__testDb = t.db
   })
-  afterEach(() => { close(); delete (globalThis as any).__testDb })
+  afterEach(() => { close() })
+
+  // 路由 reservation 建好 pending 行后，用 taskId 启动 runner
+  function startTask(runner: OcrRunner, fileName = 'a.pdf') {
+    const taskId = repo.create({ inputFormat: 'pdf', inputFileName: fileName, inputPath: '/tmp/a.pdf' })
+    runner.start({
+      taskId,
+      filePath: '/tmp/a.pdf',
+      format: 'pdf',
+      fallbackTitle: fileName.replace(/\.[^.]+$/, ''),
+      inputFileName: fileName,
+    })
+    return taskId
+  }
 
   it('happy path: pending → running → done with scoreId', async () => {
-    const db = (globalThis as any).__testDb
     const engine = mockEngine({ meta: { title: 'T', tempo: 100 }, musicXml: '<xml/>' })
-    const runner = new OcrRunner(db, engine as any, repo)
+    const runner = new OcrRunner(db, engine as never, repo)
 
-    const taskId = runner.start({ filePath: '/tmp/a.pdf', format: 'pdf', fileName: 'a.pdf' })
-    // start 触发异步 run，等它完成
+    const taskId = startTask(runner)
     await runner.waitForTask(taskId)
 
     const task = repo.get(taskId)!
@@ -1124,11 +1194,10 @@ describe('OcrRunner', () => {
   })
 
   it('failure: marks failed with error code', async () => {
-    const db = (globalThis as any).__testDb
     const engine = mockEngine(new OcrError('engine_crash', 'boom', 'detail'))
-    const runner = new OcrRunner(db, engine as any, repo)
+    const runner = new OcrRunner(db, engine as never, repo)
 
-    const taskId = runner.start({ filePath: '/tmp/a.pdf', format: 'pdf', fileName: 'a.pdf' })
+    const taskId = startTask(runner)
     await runner.waitForTask(taskId)
 
     const task = repo.get(taskId)!
@@ -1138,20 +1207,40 @@ describe('OcrRunner', () => {
   })
 
   it('healthCheck failure → failed with no_java', async () => {
-    const db = (globalThis as any).__testDb
     const engine = {
       healthCheck: vi.fn().mockResolvedValue({ ok: false, reason: 'no_java' }),
       recognize: vi.fn(),
+      cancel: vi.fn(),
     }
-    const runner = new OcrRunner(db, engine as any, repo)
+    const runner = new OcrRunner(db, engine as never, repo)
 
-    const taskId = runner.start({ filePath: '/tmp/a.pdf', format: 'pdf', fileName: 'a.pdf' })
+    const taskId = startTask(runner)
     await runner.waitForTask(taskId)
 
     const task = repo.get(taskId)!
     expect(task.status).toBe('failed')
     expect(task.errorCode).toBe('no_java')
     expect(engine.recognize).not.toHaveBeenCalled()
+  })
+
+  it('cancel kills engine and marks failed', async () => {
+    const engine = {
+      healthCheck: vi.fn().mockResolvedValue({ ok: true }),
+      recognize: vi.fn().mockImplementation(() => new Promise(() => {})), // 永不 resolve
+      cancel: vi.fn(),
+    }
+    const runner = new OcrRunner(db, engine as never, repo)
+
+    const taskId = startTask(runner)
+    // 等一拍让 running 状态就绪
+    await new Promise((r) => setTimeout(r, 10))
+    runner.cancel(taskId)
+    await runner.waitForTask(taskId)
+
+    expect(engine.cancel).toHaveBeenCalled()
+    const task = repo.get(taskId)!
+    expect(task.status).toBe('failed')
+    expect(task.errorDetail).toBe('cancelled by user')
   })
 })
 ```
@@ -1165,19 +1254,25 @@ Expected: FAIL — "Cannot find module '../runner.js'"
 
 ```typescript
 // server/src/ocr/runner.ts
+import { promises as fs } from 'node:fs'
+import path from 'node:path'
 import { insertScore } from '../db/repo.js'
-import { OcrTaskRepo, type CreateTaskInput } from '../db/ocrTaskRepo.js'
+import { OcrTaskRepo } from '../db/ocrTaskRepo.js'
 import type { OcrEngine } from './engine.js'
 import { OcrError } from './errors.js'
 import type { Db } from '../db/client.js'
 
-export interface StartInput extends CreateTaskInput {
+export interface StartInput {
+  taskId: string          // 由路由 reservation 创建后传入
   filePath: string
   format: 'pdf' | 'image'
+  fallbackTitle: string
+  inputFileName: string
 }
 
 export class OcrRunner {
-  private active = new Map<string, { taskId: string; resolve: () => void }>()
+  // taskId -> resolve（测试用 waitForTask；也用于 cancel 后清理）
+  private waiters = new Map<string, () => void>()
 
   constructor(
     private db: Db,
@@ -1185,27 +1280,42 @@ export class OcrRunner {
     private repo: OcrTaskRepo,
   ) {}
 
-  start(input: StartInput): string {
-    const taskId = this.repo.create(input)
-    // 异步跑，不 await（路由立即返回 taskId）
-    this.run(taskId, input).catch((err) => {
-      // 兜底：run 内部已处理 OcrError；这里是未预期错误
-      this.repo.markFailed(taskId, 'engine_crash', `unexpected: ${String(err)}`)
+  // 路由先 reservation（事务建 pending 行 + 409 检查）拿到 taskId，
+  // 再写文件，最后调 start 启动异步识别。
+  start(input: StartInput): void {
+    this.run(input).catch((err) => {
+      this.repo.markFailed(input.taskId, 'engine_crash', `unexpected: ${String(err)}`)
+      this.cleanup(input.taskId, input.filePath)
+      this.resolve(input.taskId)
     })
-    return taskId
+  }
+
+  // 终止运行中的任务：kill 进程 + 标 failed + 清理。
+  // 由 DELETE /api/ocr/:id 调用。
+  cancel(taskId: string): void {
+    this.engine.cancel()  // kill child（若在运行）
+    const task = this.repo.get(taskId)
+    if (task && (task.status === 'pending' || task.status === 'running')) {
+      this.repo.markFailed(taskId, 'engine_crash', 'cancelled by user')
+    }
+    if (task?.inputPath) this.cleanup(taskId, task.inputPath)
+    this.resolve(taskId)
   }
 
   // 测试用：等待任务到达终态
   async waitForTask(taskId: string): Promise<void> {
     return new Promise((resolve) => {
-      this.active.set(taskId, { taskId, resolve })
+      this.waiters.set(taskId, resolve)
     })
   }
 
-  private async run(taskId: string, input: StartInput): Promise<void> {
+  private async run(input: StartInput): Promise<void> {
+    const { taskId, filePath, format, fallbackTitle } = input
+
     const health = await this.engine.healthCheck()
     if (!health.ok) {
       this.repo.markFailed(taskId, health.reason!, 'healthCheck failed')
+      this.cleanup(taskId, filePath)
       this.resolve(taskId)
       return
     }
@@ -1213,9 +1323,7 @@ export class OcrRunner {
     this.repo.markRunning(taskId)
     try {
       const result = await this.engine.recognize({
-        taskId,
-        filePath: input.filePath,
-        format: input.format,
+        taskId, filePath, format, fallbackTitle,
       })
       const scoreId = insertScore(this.db, {
         title: result.meta.title,
@@ -1231,16 +1339,27 @@ export class OcrRunner {
         this.repo.markFailed(taskId, 'engine_crash', String(err))
       }
     } finally {
+      this.cleanup(taskId, filePath)
       this.resolve(taskId)
     }
   }
 
+  // 删除临时文件所在的任务目录（dirname(filePath)）
+  private cleanup(taskId: string, filePath: string): void {
+    const dir = path.dirname(filePath)
+    fs.rm(dir, { recursive: true, force: true }).catch(() => {})
+  }
+
   private resolve(taskId: string): void {
-    this.active.get(taskId)?.resolve()
-    this.active.delete(taskId)
+    this.waiters.get(taskId)?.()
+    this.waiters.delete(taskId)
   }
 }
 ```
+
+注意 `cleanup` 用 fire-and-forget（不 await）—— 目录清理是尽力而为，不阻塞响应。任务终态（done/failed/cancelled）后统一清理。
+
+**reservation 放在路由层而非 runner**：因为 409 检查 + 建 pending 行 + 写文件是请求处理的一部分，必须同步完成才能返回 201。runner 只负责已建好的 taskId 的异步执行。这样消除了 review 指出的"findActive 与 create 之间的竞态窗口"——reservation 在路由内是同步的事务化操作。
 
 - [ ] **Step 4: 跑测试确认通过**
 
@@ -1254,7 +1373,7 @@ Run: `cd server && npm run typecheck`
 ```bash
 cd server
 git add src/ocr/runner.ts src/ocr/__tests__/runner.test.ts
-git commit -m "feat(ocr): OcrRunner state machine (pending→running→done/failed + scoreId backfill)"
+git commit -m "feat(ocr): OcrRunner state machine + cancel + cleanup (pending→running→done/failed)"
 ```
 
 ---
@@ -1267,32 +1386,39 @@ git commit -m "feat(ocr): OcrRunner state machine (pending→running→done/fail
 - Create: `server/src/routes/ocr.ts`
 - Test: `server/src/routes/__tests__/ocr.test.ts`
 
-- [ ] **Step 1: 写失败测试**
+- [ ] **Step 1: 写失败测试（最终形态，用真实 repo + mock runner）**
+
+不用 `vi.mock` 模块级 mock（与 verbatimModuleSyntax 冲突风险），改用 helper 注入真实 OcrTaskRepo + 手工 mock runner。
 
 ```typescript
 // server/src/routes/__tests__/ocr.test.ts
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
-import { createTestApp, TEST_MUSICXML } from './helpers.js'
+import { createTestApp } from './helpers.js'
 import type { TestApp } from './helpers.js'
-import * as ocrHelpers from '../../ocr/runner.js'
+import { OcrEngine } from '../../ocr/engine.js'
 
-// 注入 mock runner，避免真实 spawn
-vi.mock('../../ocr/runner.js', () => {
+// healthCheck 永远成功的真实 engine（配 fake path，不实际 spawn）
+const fakeConfig = {
+  javaBin: '/fake/java', jarPath: '/fake/audiveris.jar',
+  tessdataDir: '/fake/tessdata', dbPath: ':memory:',
+}
+
+function makeMockRunner() {
   return {
-    OcrRunner: vi.fn().mockImplementation(() => ({
-      start: vi.fn().mockImplementation((input) => {
-        // 模拟立即成功：往 db 插 score + 标 done
-        // 但为隔离测试，这里只返回 fake taskId，状态由 createTestApp 的 mock 控制
-        return 'fake-task-id'
-      }),
-    })),
+    start: vi.fn(),
+    cancel: vi.fn(),
   }
-})
+}
 
 describe('OCR API', () => {
   let test: TestApp
-  beforeEach(() => { test = createTestApp() })
-  afterEach(() => { test.close() })
+  beforeEach(() => {
+    const engine = new OcrEngine(fakeConfig)
+    // 让 healthCheck 返回 ok=true（绕过真实 java 检测）
+    vi.spyOn(engine, 'healthCheck').mockResolvedValue({ ok: true })
+    test = createTestApp({ engine, runner: makeMockRunner() })
+  })
+  afterEach(() => { test.close(); vi.restoreAllMocks() })
 
   it('POST /api/ocr rejects non-PDF/image', async () => {
     const fd = new FormData()
@@ -1311,10 +1437,10 @@ describe('OCR API', () => {
 
   it('POST /api/ocr accepts PDF and returns taskId', async () => {
     const fd = new FormData()
-    fd.append('file', new File([new Uint8Array([0x25, 0x50])], 'a.pdf', { type: 'application/pdf' }))
+    fd.append('file', new File([new Uint8Array([0x25, 0x50])], 'score.pdf', { type: 'application/pdf' }))
     const res = await test.app.request('/api/ocr', { method: 'POST', body: fd })
     expect(res.status).toBe(201)
-    const body = await res.json() as any
+    const body = await res.json() as { taskId: string; status: string }
     expect(body.taskId).toBeTruthy()
     expect(body.status).toBe('pending')
   })
@@ -1327,21 +1453,39 @@ describe('OCR API', () => {
   it('GET /api/health returns ocr availability', async () => {
     const res = await test.app.request('/api/health')
     expect(res.status).toBe(200)
-    const body = await res.json() as any
-    expect(body).toHaveProperty('ocr')
-    expect(body.ocr).toHaveProperty('available')
+    const body = await res.json() as { ocr: { available: boolean } }
+    expect(body.ocr).toBeDefined()
+    expect(body.ocr.available).toBe(true) // healthCheck 被 mock 为 ok
+  })
+
+  it('DELETE /api/ocr/:id calls runner.cancel', async () => {
+    const engine = new OcrEngine(fakeConfig)
+    vi.spyOn(engine, 'healthCheck').mockResolvedValue({ ok: true })
+    const runner = makeMockRunner()
+    // 这个测试用自己的 engine/runner 实例，绕过 beforeEach 的 test app
+    const localTest = createTestApp({ engine, runner })
+
+    const fd = new FormData()
+    fd.append('file', new File([new Uint8Array([0x25, 0x50])], 'a.pdf', { type: 'application/pdf' }))
+    const createRes = await localTest.app.request('/api/ocr', { method: 'POST', body: fd })
+    const { taskId } = await createRes.json() as { taskId: string }
+
+    const res = await localTest.app.request(`/api/ocr/${taskId}`, { method: 'DELETE' })
+    expect(res.status).toBe(200)
+    expect(runner.cancel).toHaveBeenCalledWith(taskId)
+    localTest.close()
   })
 })
 ```
 
-注意：`createTestApp` 当前不挂载 ocr 路由。需要在 helpers.ts 改造或测试内手动挂——这里用测试内注入。
-
 - [ ] **Step 2: 跑测试确认失败**
 
 Run: `cd server && npx vitest run src/routes/__tests__/ocr.test.ts`
-Expected: FAIL — 路由未挂载
+Expected: FAIL — `createTestApp` 不接受参数 / ocr + health 路由未挂载
 
-- [ ] **Step 3: 实现 ocr 路由**
+- [ ] **Step 3: 实现 ocr 路由（含 reservation）**
+
+关键：reservation 把"409 检查 + 建 pending 行"做成同步操作，消除竞态窗口。先 reservation 拿 taskId，再写文件，再 start runner。
 
 ```typescript
 // server/src/routes/ocr.ts
@@ -1351,9 +1495,8 @@ import path from 'node:path'
 import { promises as fs } from 'node:fs'
 import type { Db } from '../db/client.js'
 import { OcrTaskRepo } from '../db/ocrTaskRepo.js'
-import { OcrEngine } from '../ocr/engine.js'
-import { OcrRunner } from '../ocr/runner.js'
-import { loadOcrConfig } from '../ocr/config.js'
+import type { OcrEngine } from '../ocr/engine.js'
+import type { OcrRunner } from '../ocr/runner.js'
 
 const MAX_BYTES = 20 * 1024 * 1024 // 20MB
 const ALLOWED_EXT: Record<string, 'pdf' | 'image'> = {
@@ -1381,29 +1524,43 @@ export function createOcrRoute(db: Db, engine: OcrEngine, runner: OcrRunner): Ho
       return c.json({ error: 'File too large', detail: 'Max 20MB' }, 400)
     }
 
-    // 409 串行约束
+    // === Reservation：同步事务化，消除 findActive/create 竞态 ===
+    // SQLite better-sqlite3 本身同步，findActive + create 在同一事件循环 tick 内完成，
+    // 不会有其他请求插入。先检查再创建。
     const active = repo.findActive()
     if (active) {
       return c.json({ error: 'An OCR task is already running', activeTaskId: active.id }, 409)
     }
-
-    // 写临时文件
-    const taskId = crypto.randomUUID()
-    const taskDir = path.join(os.tmpdir(), 'pianoscore-ocr', taskId)
     const ext = path.extname(file.name)
-    const inputPath = path.join(taskDir, `input${ext}`)
-    await fs.mkdir(taskDir, { recursive: true })
-    await fs.writeFile(inputPath, new Uint8Array(await file.arrayBuffer()))
-
-    const ocrTaskId = runner.start({
-      filePath: inputPath,
-      format: matched[1],
+    const taskId = repo.create({
       inputFormat: matched[1] === 'pdf' ? 'pdf' : ext.slice(1),
       inputFileName: file.name,
-      inputPath,
+    })
+    // reservation 完成，后续异步操作不影响并发判断
+
+    // 写临时文件
+    const taskDir = path.join(os.tmpdir(), 'pianoscore-ocr', taskId)
+    const inputPath = path.join(taskDir, `input${ext}`)
+    try {
+      await fs.mkdir(taskDir, { recursive: true })
+      await fs.writeFile(inputPath, new Uint8Array(await file.arrayBuffer()))
+    } catch (err) {
+      // 写文件失败：回滚任务
+      repo.markFailed(taskId, 'engine_crash', `failed to write temp file: ${String(err)}`)
+      return c.json({ taskId, status: 'failed', errorCode: 'engine_crash' }, 201)
+    }
+
+    // 回填 inputPath 并启动 runner
+    repo.updateInputPath(taskId, inputPath)
+    runner.start({
+      taskId,
+      filePath: inputPath,
+      format: matched[1],
+      fallbackTitle: file.name.replace(/\.[^.]+$/, ''),
+      inputFileName: file.name,
     })
 
-    return c.json({ taskId: ocrTaskId, status: 'pending' }, 201)
+    return c.json({ taskId, status: 'pending' }, 201)
   })
 
   route.get('/:id', (c) => {
@@ -1425,11 +1582,8 @@ export function createOcrRoute(db: Db, engine: OcrEngine, runner: OcrRunner): Ho
 
   route.delete('/:id', (c) => {
     const id = c.req.param('id')
-    const task = repo.get(id)
-    if (task?.inputPath) {
-      const dir = path.dirname(task.inputPath)
-      fs.rm(dir, { recursive: true, force: true }).catch(() => {})
-    }
+    // runner.cancel 负责 kill 进程 + 标 failed + 清理目录
+    runner.cancel(id)
     const deleted = repo.delete(id)
     return c.json({ deleted })
   })
@@ -1438,49 +1592,67 @@ export function createOcrRoute(db: Db, engine: OcrEngine, runner: OcrRunner): Ho
 }
 ```
 
-- [ ] **Step 4: 修改 helpers.ts 挂载 ocr 路由**
-
-helpers.ts 的 `createTestApp` 需要挂 ocr 路由 + 提供 engine/runner。改为接受可选注入，便于测试传 mock。修改 helpers.ts：
+注意新增 `repo.updateInputPath(taskId, inputPath)` —— 在 OcrTaskRepo 加一个方法：
 
 ```typescript
-// 在 createTestApp 签名加可选参数
-export function createTestApp(ocr?: { engine: any; runner: any }): TestApp {
-  // ... 原有建表 + scores/sessions/import 路由 ...
+// 在 OcrTaskRepo（Task 3）追加
+updateInputPath(id: string, inputPath: string): void {
+  this.db.update(ocrTasks).set({ inputPath }).where(eq(ocrTasks.id, id)).run()
+}
+```
+
+需在 Task 3 补一个对应单测。
+
+- [ ] **Step 4: 修改 helpers.ts 挂载 ocr + health 路由**
+
+`createTestApp` 改为接受可选 ocr 注入，并挂载 `/api/ocr` 和 `/api/health`：
+
+```typescript
+// helpers.ts 顶部 import 区追加
+import { createOcrRoute } from '../ocr.js'
+import type { OcrEngine } from '../../ocr/engine.js'
+import type { OcrRunner } from '../../ocr/runner.js'
+
+export interface TestApp {
+  app: Hono
+  db: Db
+  close: () => void
+}
+
+export function createTestApp(ocr?: {
+  engine: OcrEngine
+  runner: OcrRunner
+}): TestApp {
+  // ... 原有建表 ...
+
+  const app = new Hono()
+  app.route('/api/scores', createScoresRoute(db))
+  app.route('/api/scores', createSessionsRoute(db))
+  app.route('/api/import', createImportRoute(db))
+
+  // health：测试用同步返回，可用性由传入 engine 决定
+  app.get('/api/health', async (c) => {
+    if (ocr) {
+      const h = await ocr.engine.healthCheck()
+      return c.json({ status: 'healthy', ocr: { available: h.ok, reason: h.reason } })
+    }
+    return c.json({ status: 'healthy', ocr: { available: false, reason: 'no_audiveris' } })
+  })
 
   if (ocr) {
     app.route('/api/ocr', createOcrRoute(db, ocr.engine, ocr.runner))
   }
-  // ... 其余不变 ...
+
+  return { app, db, close: () => sqlite.close() }
 }
 ```
 
-并在 helpers.ts 顶部 import `createOcrRoute`。
-
-由于 mock runner 测试方式复杂，**简化策略**：ocr.test.ts 直接用真实 OcrTaskRepo + 一个内联的 mock runner 对象，不依赖 vi.mock。重写 ocr.test.ts Step 1 的注入为构造真实组件但 engine mock：
-
-```typescript
-// 修改 ocr.test.ts 顶部，去掉 vi.mock，改用 helper 注入
-import { OcrEngine } from '../../ocr/engine.js'
-
-function makeMockRunner() {
-  const tasks: Record<string, any> = {}
-  return {
-    start: vi.fn().mockImplementation((input: any) => {
-      const id = crypto.randomUUID()
-      tasks[id] = { status: 'pending', input }
-      return id
-    }),
-    _tasks: tasks,
-  }
-}
-```
-
-并在每个测试 `createTestApp({ engine: new OcrEngine(config), runner: makeMockRunner() })`。
+这样 health 测试（在 Task 8）能挂载，且用注入的 engine 的 healthCheck 结果。DELETE 测试里 `runner.cancel` 是 mock，断言它被调用即可。
 
 - [ ] **Step 5: 跑测试确认通过**
 
 Run: `cd server && npx vitest run src/routes/__tests__/ocr.test.ts`
-Expected: PASS
+Expected: PASS — 全部 6 个测试
 
 - [ ] **Step 6: typecheck + Commit**
 
@@ -1534,9 +1706,8 @@ const ocrEngine = new OcrEngine(ocrConfig)
 const ocrTaskRepo = new OcrTaskRepo(db)
 const ocrRunner = new OcrRunner(db, ocrEngine, ocrTaskRepo)
 
-// 启动时异步跑 healthCheck，缓存结果供 /api/health
-let ocrHealth = { ok: false, reason: 'no_audiveris' as const }
-ocrEngine.healthCheck().then((r) => { ocrHealth = r })
+// 启动时预热 healthCheck（结果缓存在 engine 内部，供 /api/health 复用）
+ocrEngine.healthCheck().catch(() => {})
 
 app.get('/api/health', async (c) => {
   const ocr = await ocrEngine.healthCheck()
@@ -1582,7 +1753,7 @@ git commit -m "feat(server): extend /api/health with OCR availability + mount /a
 **Files:**
 - Create: `LICENSE-THIRD-PARTY.md`
 - Create: `LICENSES/AGPL-3.0.txt`
-- Modify: `LICENSE`（顶部加声明段）
+- Create: `LICENSE`（仓库当前不存在，新建 MIT 许可证 + 第三方指引声明）
 - Modify: `README.md`（加第三方组件章节）
 
 - [ ] **Step 1: 创建 LICENSES/AGPL-3.0.txt**
@@ -1634,16 +1805,39 @@ has not been tested in court. Projects integrating AGPL components
 should consult their own legal counsel.
 ```
 
-- [ ] **Step 3: LICENSE 顶部加声明段**
+- [ ] **Step 3: 新建 LICENSE（项目 MIT + 第三方声明）**
 
-在 LICENSE 文件最顶部（MIT 标题之前）追加：
+仓库当前没有 LICENSE 文件。新建一份完整的 MIT 许可证，顶部加第三方声明段：
 
 ```markdown
 > PianoScore itself is licensed under the MIT License (below). Third-party
 > components integrated as independent processes are listed in
 > `LICENSE-THIRD-PARTY.md` and retain their original licenses.
 
+MIT License
+
+Copyright (c) 2026 sbhorshy
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 ```
+
+> 注：copyright holder 与年份以 `git config user.name` 和当前年份为准（sbhorshy / 2026）。若项目已有其他版权声明约定，以实际为准。
 
 - [ ] **Step 4: README.md 加"第三方组件"章节**
 
@@ -1659,15 +1853,19 @@ PianoScore 通过子进程（`child_process.spawn`）方式集成以下 OMR 引�
   PianoScore 不链接 Audiveris 代码，仅通过文件系统交换数据（输入 PDF → 输出 MusicXML）。
   许可证与源码获取详见 `LICENSE-THIRD-PARTY.md`。
 
-> AGPL-3.0 是强 copyleft 许可证。本项目基于"进程隔离"原则集成，保留 MIT 许可。
-> 商业部署请咨询法务。
+> AGPL-3.0 是强 copyleft 许可证。本项目**假设**进程隔离不触发传染（GPL/AGPL 社区惯例），
+> 从而保留 MIT 许可——但这属于项目假设而非确定法律结论，商业部署请咨询法务确认。
 ```
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add LICENSES/AGPL-3.0.txt LICENSE-THIRD-PARTY.md LICENSE README.md
-git commit -m "docs(license): AGPL compliance for Audiveris integration (process isolation, keep MIT)"
+git commit -m "docs(license): add MIT LICENSE + Audiveris AGPL third-party notice
+
+Process-isolation integration model (per project assumption that this
+avoids copyleft per GPL/AGPL community convention — not legal advice;
+commercial deployments should verify with counsel)."
 ```
 
 ---
@@ -1682,13 +1880,15 @@ git commit -m "docs(license): AGPL compliance for Audiveris integration (process
 
 - [ ] **Step 1: 准备测试 fixture（需手动）**
 
-这一步需要人工准备两份 PDF：
-- `server/test-fixtures/score-ocr.pdf`：单谱表、C 大调四分音符音阶 4-8 个音符。可用 MuseScore 导出 PDF，或从公开免版税乐谱截取单页。**关键是简单到 Audiveris 几乎不会认错。**
-- `server/test-fixtures/not-score.txt`：改名为 `.pdf` 扩展名的纯文字文件（或真实文字 PDF），用于断言 no_output/low_confidence。
+这一步需要人工准备两份文件，放在 `server/test-fixtures/`：
+- `score-ocr.pdf`：单谱表、C 大调四分音符音阶 4-8 个音符。可用 MuseScore 导出 PDF，或从公开免版税乐谱截取单页。**关键是简单到 Audiveris 几乎不会认错。**
+- `not-score.pdf`：真实文字 PDF（不是改名文件——直接用一段纯文本通过浏览器/Word 打印为 PDF），用于断言 no_output/low_confidence。**文件名统一为 `.pdf`，测试读这个名字。**
 
 在 README 或此处记录 fixture 来源。**若暂时无法准备，标记此 Task 为 blocked，先做 Task 12 验收。**
 
 - [ ] **Step 2: 写集成测试**
+
+注意：server 是 ESM，**不能用 `__dirname`**，需用 `import.meta.url` 派生。
 
 ```typescript
 // server/src/ocr/__tests__/integration.test.ts
@@ -1696,8 +1896,12 @@ import { describe, it, expect } from 'vitest'
 import path from 'node:path'
 import os from 'node:os'
 import { promises as fs } from 'node:fs'
+import { fileURLToPath } from 'node:url'
 import { OcrEngine } from '../engine.js'
-import { OcrError } from '../errors.js'
+
+// ESM 下 __dirname 派生
+const __dirname = path.dirname(fileURLToPath(import.meta.url))
+const FIXTURES_DIR = path.join(__dirname, '../../../test-fixtures')
 
 const JAR = process.env.PIANOSCORE_AUDIVERIS_JAR
 
@@ -1709,17 +1913,18 @@ describeOrSkip('OcrEngine integration (real Audiveris)', () => {
     javaBin: process.env.PIANOSCORE_JAVA ?? 'java',
     jarPath: JAR!,
     tessdataDir: process.env.PIANOSCORE_TESSDATA,
-    dbPath: '/dev/null',
+    dbPath: ':memory:',
   })
 
   it('recognizes a simple score PDF', async () => {
-    const pdfPath = path.join(__dirname, '../../../test-fixtures/score-ocr.pdf')
     const taskDir = path.join(os.tmpdir(), `pianoscore-ocr-it-${Date.now()}`)
     const inputPath = path.join(taskDir, 'input.pdf')
     await fs.mkdir(taskDir, { recursive: true })
-    await fs.copyFile(pdfPath, inputPath)
+    await fs.copyFile(path.join(FIXTURES_DIR, 'score-ocr.pdf'), inputPath)
 
-    const result = await engine.recognize({ taskId: 'it1', filePath: inputPath, format: 'pdf' })
+    const result = await engine.recognize({
+      taskId: 'it1', filePath: inputPath, format: 'pdf', fallbackTitle: 'score-ocr',
+    })
     expect(result.musicXml).toContain('<score-partwise')
     expect(result.meta.tempo).toBeGreaterThan(0)
 
@@ -1727,19 +1932,21 @@ describeOrSkip('OcrEngine integration (real Audiveris)', () => {
   }, 60_000) // 60s 超时
 
   it('fails on non-score input', async () => {
-    const pdfPath = path.join(__dirname, '../../../test-fixtures/not-score.pdf')
     const taskDir = path.join(os.tmpdir(), `pianoscore-ocr-it-${Date.now()}`)
     const inputPath = path.join(taskDir, 'input.pdf')
     await fs.mkdir(taskDir, { recursive: true })
-    await fs.copyFile(pdfPath, inputPath)
+    await fs.copyFile(path.join(FIXTURES_DIR, 'not-score.pdf'), inputPath)
 
-    await expect(engine.recognize({ taskId: 'it2', filePath: inputPath, format: 'pdf' }))
-      .rejects.toThrow()
+    await expect(engine.recognize({
+      taskId: 'it2', filePath: inputPath, format: 'pdf', fallbackTitle: 'not-score',
+    })).rejects.toThrow()
 
     await fs.rm(taskDir, { recursive: true, force: true })
   }, 60_000)
 })
 ```
+
+移除了原 import 里未使用的 `OcrError`（noUnusedLocals）。`dbPath` 用 `:memory:`（better-sqlite3 内存库占位，集成测试不写 DB）。
 
 - [ ] **Step 3: 跑测试（无 jar 应跳过）**
 
