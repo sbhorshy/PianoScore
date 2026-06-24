@@ -157,11 +157,39 @@ export type OcrTaskRow = typeof ocrTasks.$inferSelect
 
 **数据库迁移**：新增表通过 `drizzle-kit generate` 生成迁移 SQL（项目已有 `drizzle.config.ts`），`npm run db:push` 推送到 `db.sqlite`。现有 scores/sessions 表不变，向后兼容。打包后 App 首次启动时，若 `appDataDir/db.sqlite` 不存在则从模板复制（schema 已含新表）；已存在旧库的情况，MVP 阶段用户量小，可接受手动重新初始化（不实现自动 migration runner）。
 
-### 3.2 复用 `scores` 表（不改 schema）
+### 3.2 复用 `scores` 表（schema 不变，但入库函数需改）
 
-现有 `scores.sourceFormat`（default `'musicxml'`）直接复用：识别入库时标 `sourceFormat = 'ocr'`。前端在 Library 卡片显示小标签「📷 扫描识别」。
+现有 `scores.sourceFormat`（default `'musicxml'`）列直接复用：识别入库时标 `sourceFormat = 'ocr'`。
 
-**元数据回退策略**（OcrEngine 内处理）：Audiveris 输出的 MusicXML 常缺标题/作曲家 → 标题取文件名去扩展名，作曲家为空，tempo 默认 120。与现有 `MusicXmlParser.extractMetadata` 的回退逻辑一致，不引入新规则。
+**问题：当前 `insertScore` 硬编码 `sourceFormat: 'musicxml'`**（`repo.ts:26`），无法写入 `'ocr'`。需扩展签名：
+
+```typescript
+// 扩展为可选参数，向后兼容（现有 MusicXmlParser 调用不变）
+export function insertScore(
+  db: Db,
+  parsed: ParsedScore,
+  options?: { sourceFormat?: string },
+): string {
+  // ...
+  sourceFormat: options?.sourceFormat ?? 'musicxml',
+  // ...
+}
+```
+
+OCR 入库调用：`insertScore(db, parsed, { sourceFormat: 'ocr' })`。
+
+### 3.3 `sourceFormat` 全链路打通（review P1）
+
+当前 `sourceFormat` 存在 DB 但**整条返回链路都不返回它**，前端 LibraryPage 拿不到。需同步修改四层：
+
+| 层 | 文件 | 改动 |
+|----|------|------|
+| repo | `server/src/db/repo.ts` | `ScoreSummary` 接口加 `sourceFormat: string`；`listScores()` 返回该字段；`getFullScore()` 的 `FullScore` 同样加 |
+| route | `server/src/routes/scores.ts` | 无需改（透传 repo 返回） |
+| api 客户端 | `app/src/lib/api.ts` | `ScoreSummary` 接口加 `sourceFormat: string`；`ScoreData` 同样加 |
+| 页面 | `app/src/pages/LibraryPage.tsx` | 基于 `score.sourceFormat === 'ocr'` 渲染「📷 扫描识别」标签 |
+
+**元数据回退策略**（见下方 Open Question 的统一规则）：标题 fallback 取文件名去扩展名（OCR 独有规则，因为扫描谱常无标题），作曲家为空，tempo 默认 120。
 
 ---
 
@@ -181,6 +209,7 @@ Content-Type: multipart/form-data
 ```
 
 - 校验扩展名（`.pdf/.png/.jpg/.jpeg`）和大小（≤20MB）。
+- **串行约束（后端强制，非仅前端限制）**：查询是否有 `status IN ('pending','running')` 的任务。若有，返回 `409 { error: 'An OCR task is already running', activeTaskId }`。这防止双击、页面刷新恢复、直接 API 调用绕过前端限制。MVP 不做任务队列（409 即拒绝，用户需等当前任务完成或取消后再提交）。
 - 写临时文件 → 建任务行 → **立即异步启动识别**（不 await，路由立刻返回 taskId）。
 - **后端活着但缺 Java（healthCheck 不通过）时，仍返回 201 + pending**：把环境错误延迟到轮询时以 `errorCode: no_java` 暴露。这样前端流程统一（永远轮询），不为"环境检测失败"单独写分支。
 - 注意：这条规则的前提是后端进程能接收请求。如果后端进程根本没启动（场景 3），`POST /api/ocr` 连接被拒，由前端的网络错误处理，不在此规则覆盖范围内。
@@ -356,17 +385,23 @@ ImportPage 挂载时 ping `/api/health` 失败 → OCR 区块显示"PDF 识别�
 
 ### 6.1 Audiveris CLI 契约
 
+Audiveris CLI 的输入是 **positional `INPUT_FILES`**（不是 `-input` 参数），通过 `--` 与选项分隔。完整识别需 `-transcribe`（符号检测→建谱）+ `-export`（写输出文件）。参考：[Audiveris CLI 文档](https://audiveris.github.io/audiveris/_pages/guides/advanced/cli/)。
+
 ```bash
 java -jar audiveris.jar \
   -batch \                          # 无 GUI 模式（必须）
-  -export \                         # 导出 .mrz + .xml (MusicXML)
-  -input  /tmp/ocr/<taskId>/input.pdf \
-  -output /tmp/ocr/<taskId>/out/
+  -transcribe \                     # 运行 OMR 转录步骤（符号检测 → 建谱）
+  -export \                         # 导出 .mrz + MusicXML
+  -sheets 1 \                       # 只处理第一个 sheet（限制多页处理范围，见 8.8）
+  -output /tmp/ocr/<taskId>/out/ \
+  -- /tmp/ocr/<taskId>/input.pdf    # positional INPUT_FILES，-- 与选项分隔
 ```
 
 - `-batch` 模式不弹 GUI，纯命令行——程序化调用的前提。
-- Audiveris **必须给目录输出**，在 `out/` 下生成 `input.mrz`、`input.xml`（MusicXML）、`input.pdf`（叠加图）。
-- 多页 PDF：Audiveris 自动把每页当一个 sheet，输出多个 `input-1.xml` `input-2.xml`。**MVP 只取第一个 XML 入库**，其余忽略（见 8.1）。
+- `-sheets 1` 限制只处理第一页（sheet）。不带此参数时 Audiveris 处理所有页，浪费时间；带上后多页 PDF 也只识别首页，CPU/耗时与单页等价。
+- Audiveris **必须给目录输出**（`-output`），在 `out/` 下生成 `input.mrz`、`input.mxl`（压缩 MusicXML）、`input.pdf`（叠加图）。
+- **输出格式是 `.mxl`（压缩 ZIP），不是 `.xml`**：Audiveris 默认输出压缩 MusicXML（`.mxl`）。OcrEngine 必须能读 `.mxl`（ZIP 解压取内部 MusicXML）——直接复用现有 `musicxml.ts` 的 `extractMxl()`（已实现 ZIP 解压）。若需强制非压缩输出，可通过 `-constant Audiveris.output.xml.compressed=false` 配置（备选方案，但复用 `extractMxl` 更简单，不引入新配置）。
+- OcrEngine 扫描 outDir 时应匹配 `*.mxl` **和** `*.xml`（兼容用户手动改配置的情况）。
 
 ### 6.2 OcrEngine 类设计
 
@@ -409,8 +444,9 @@ recognize(input)
   │
   ├─ 1. if (!this.isAvailable) throw OcrError(missingReason)
   │
-  ├─ 2. spawn('java', ['-jar', jarPath, '-batch', '-export',
-  │         '-input', input.filePath, '-output', outDir])
+  ├─ 2. spawn('java', ['-jar', jarPath, '-batch', '-transcribe',
+  │         '-export', '-sheets', '1', '-output', outDir,
+  │         '--', input.filePath])
   │     spawnOptions = { env: { ...process.env,
   │       TESSDATA_PREFIX: this.tesseractData } }  ← 关键
   │
@@ -422,14 +458,15 @@ recognize(input)
   │     ├─ exit 非 0 → throw OcrError('engine_crash', stderr 尾部)
   │     └─ timeout → throw OcrError('engine_crash', 'timeout 90s')
   │
-  ├─ 5. 扫描 outDir，找第一个 *.xml
-  │     找不到 → throw OcrError('no_output', outDir 内容列表)
+  ├─ 5. 扫描 outDir，找第一个 *.mxl（优先）或 *.xml
+  │     .mxl 是 ZIP → 复用 musicxml.ts 的 extractMxl() 解压取内部 XML
+  │     找不到任何 .mxl/.xml → throw OcrError('no_output', outDir 内容列表)
   │
   ├─ 6. 读 XML → 校验根是 <score-partwise>
   │     空谱 / 无音符 → throw OcrError('low_confidence',
   │                               'Audiveris output has 0 notes')
   │
-  └─ 7. 提取 meta（复用 MusicXmlParser 的元数据提取逻辑）
+  └─ 7. 提取 meta（复用导出的 extractMusicXmlMetadata()，见下方 Open Question）
         return { musicXml, meta }
 ```
 
@@ -648,7 +685,7 @@ export function loadOcrConfig(): OcrConfig {
 
 **Tesseract 的好消息**：Audiveris jar 内已打包 Tesseract 的 Java 绑定（leptonica + tess4j），只需额外提供 `tessdata/*.traineddata`（纯数据，跨平台）。不用单独装系统 Tesseract。
 
-**macOS 双架构**：Apple Silicon + Intel 要两份 JRE 和 node。MVP 先只支持一个架构（见 8.7）。
+**macOS 双架构**：Apple Silicon + Intel 要两份 JRE 和 node。MVP 先只支持一个架构（见 8.6）。
 
 ### 7.7 开发模式 vs 生产模式
 
@@ -667,24 +704,66 @@ export function loadOcrConfig(): OcrConfig {
 
 ## 8. 已知限制（MVP 明确不做）
 
-1. **多页 PDF 只取第一页** —— Audiveris 多页产出多个 XML，MVP 只入库第一页。多页合并需要乐谱拼接逻辑（拍号对齐、小节连续），复杂度高，后续迭代。
-2. **仅英语 tessdata** —— `eng.traineddata` 约 15MB。钢琴谱主要识别音符（不依赖语言模型），英语够用。其他语言（声乐谱带歌词）后续支持。
-3. **无识别参数调优** —— Audiveris 有大量开关（`-transcription`、`-specifications` 等），MVP 用默认。复杂谱面（手稿、低清扫描）识别率会下降，靠用户重试。
-4. **无进度百分比** —— Audiveris stdout 无结构化进度，只展示"识别中 + 已耗时"。
-5. **无批处理** —— 一次一个任务。多任务并发会同时跑多个 Java 进程吃 CPU，MVP 串行（前端一次只一个 OCR 卡片）。
-6. **预览页不提供手动修正** —— 任务 done 直接入库（用户确认），识别错误靠删除重识别，不做在线 MusicXML 编辑器。
-7. **macOS 仅单架构** —— MVP 先支持一个架构（Intel 或 ARM 二选一），universal binary 后续。
-8. **识别结果无质量评分展示** —— Audiveris 内部有信心度但不暴露到 MusicXML，前端无法据此提示。
+1. **仅英语 tessdata** —— `eng.traineddata` 约 15MB。钢琴谱主要识别音符（不依赖语言模型），英语够用。其他语言（声乐谱带歌词）后续支持。
+2. **无识别参数调优** —— Audiveris 有大量开关（`-transcription`、`-specifications` 等），MVP 用默认。复杂谱面（手稿、低清扫描）识别率会下降，靠用户重试。
+3. **无进度百分比** —— Audiveris stdout 无结构化进度，只展示"识别中 + 已耗时"。
+4. **无批处理** —— 一次一个任务。多任务并发会同时跑多个 Java 进程吃 CPU，MVP 串行：**后端用 409 拒绝**（见 4.1），前端一次只渲染一个 OCR 卡片。不做任务队列（YAGNI）。
+5. **预览页不提供手动修正** —— 任务 done 直接入库（用户确认），识别错误靠删除重识别，不做在线 MusicXML 编辑器。
+6. **macOS 仅单架构** —— MVP 先支持一个架构（Intel 或 ARM 二选一），universal binary 后续。
+7. **识别结果无质量评分展示** —— Audiveris 内部有信心度但不暴露到 MusicXML，前端无法据此提示。
+8. **多页 PDF 只识别首页** —— 由 `-sheets 1` 在 CLI 层强制（见 6.1），不仅丢弃后续输出而是根本不处理，节省 CPU 和等待时间。多页合并需要乐谱拼接逻辑（拍号对齐、小节连续），复杂度高，后续迭代。
 
 ---
 
-## 9. 测试策略
+## 9. 许可证合规风险：AGPL-3.0（⚠ 需用户决策）
 
-### 9.1 第一层：纯函数单测（不依赖 Java，CI 必跑）
+> **这一节是 review 提出的阻塞性问题，涉及项目整体许可证走向，必须由项目所有者（你）决策后才能固化。下面是事实陈述和选项分析。**
+
+### 9.1 事实
+
+- **Audiveris 采用 AGPL-3.0 许可证**（[GitHub](https://github.com/Audiveris/audiveris)）。
+- **PianoScore 当前是 MIT 许可证**（README、LICENSE）。
+- AGPL-3.0 比 GPL 更严格，有**网络条款**：用户即使通过网络远程访问（不只分发二进制），也必须能获得对应源码。
+
+### 9.2 风险：copyleft 传染
+
+将 Audiveris jar 整合进 PianoScore 并随 App 分发，会触发 AGPL 的 copyleft：
+
+- **组合作品（derivative work）**：把 AGPL jar 打进 App，整个 PianoScore（含 React 前端、Hono 后端、Tauri 壳）会被要求以 AGPL-3.0 开源。
+- **这与当前 MIT 许可证冲突**：MIT 是宽松许可，AGPL 是强 copyleft，两者组合时 AGPL 占主导（MIT 代码可被 AGPL 包含，但组合产物整体 AGPL）。
+- **是否修改 Audiveris 不影响传染**：即使原样打包不修改，只要分发就需提供源码；若修改还需声明改动。
+
+### 9.3 选项（需决策）
+
+| 选项 | 做法 | 影响 |
+|------|------|------|
+| **A. 接受 AGPL，整个项目转 AGPL-3.0** | 把 PianoScore LICENSE 从 MIT 改为 AGPL-3.0，README 声明，提供 Audiveris 源码获取途径 | 合规最简单，但项目从 MIT 变 AGPL，影响后续商业使用和社区贡献 |
+| **B. 进程隔离 + 保留 MIT** | Audiveris 作为**独立进程**通过命令行调用（本设计正是如此！），PianoScore 不链接 Audiveris 代码，理论上不构成组合作品 | **法律灰区**。多数律师认为"独立进程 + 命令行"不触发 copyleft（arm's length），但无判例保证。需在 README 声明 Audiveris 是独立 AGPL 组件，单独提供其源码 |
+| **C. 不打包 jar，运行时下载** | App 不分发 jar，首次启动时从官方源下载 Audiveris jar 到用户机器 | 不构成"分发"，规避 copyleft。但违背"全打包零配置"目标，依赖网络，且 jar 下载源稳定性存疑 |
+| **D. 放弃 Audiveris，找宽松许可的 OMR** | 寻找 MIT/Apache 许可的 OMR 引擎 | 绕开问题，但 Audiveris 是目前最成熟的开源 OMR，替代品（如 oemer）识别率/成熟度差距大 |
+
+### 9.4 本设计对选项 B 的天然契合
+
+**关键：本设计从一开始就是"进程隔离"架构**——后端用 `child_process.spawn('java', ...)` 调 Audiveris，PianoScore 代码**不 import 任何 Audiveris 类**，通过文件系统交换数据（输入 PDF / 输出 MusicXML）。这是 GPL/AGPL 社区公认的"不构成组合作品"的边界。
+
+**但仍需法务确认**：进程隔离在司法上无判例。建议如果选 B，采取以下措施降低风险：
+1. README 明确声明 Audiveris 是独立 AGPL 组件，其 jar 单独获取（即使打包也声明来源）。
+2. 提供 Audiveris 源码获取方式（链接到官方 GitHub + 标明所用版本/commit）。
+3. 不修改 Audiveris（用官方 release jar）。
+
+### 9.5 待决策（阻塞 spec 固化）
+
+**请选择 9.3 的 A / B / C / D 之一。** 在此之前，spec 的其他技术章节已按"假设选 B（进程隔离）"编写，因为这是本架构的天然形态。若选 A，则需追加 LICENSE 文件变更；若选 C，则需重写第 7 节打包策略；若选 D，则整个设计推翻重来。
+
+---
+
+## 10. 测试策略
+
+### 10.1 第一层：纯函数单测（不依赖 Java，CI 必跑）
 
 | 测试目标 | 怎么测 |
 |---------|--------|
-| `OcrEngine` 错误码映射 | mock child_process，让"进程返回非0"→ 断言抛 `engine_crash`；"outDir 无 .xml"→ 断言 `no_output`；"XML 0 音符"→ `low_confidence` |
+| `OcrEngine` 错误码映射 | mock child_process，让"进程返回非0"→ 断言抛 `engine_crash`；"outDir 无 .mxl/.xml"→ 断言 `no_output`；"XML 0 音符"→ `low_confidence` |
 | `OcrRunner` 状态机 | mock OcrEngine，断言 task 表从 pending→running→done/failed 的字段流转，scoreId 回填正确 |
 | `taskRepo` CRUD | 内存 SQLite，建任务/查状态/更新/删除 |
 | 元数据回退 | 喂缺标题的 XML，断言标题取文件名、tempo=120 |
@@ -692,7 +771,7 @@ export function loadOcrConfig(): OcrConfig {
 
 这层是回归保障，覆盖所有状态流转和错误分支，不需要真实 Java。复用现有 vitest + 内存 SQLite 模式。
 
-### 9.2 第二层：集成测试（需要 Java，本地/可选 CI 跑）
+### 10.2 第二层：集成测试（需要 Java，本地/可选 CI 跑）
 
 `server/src/ocr/__tests__/integration.test.ts`，用 `describe.skipIf(!process.env.PIANOSCORE_AUDIVERIS_JAR)` 守卫：
 
@@ -702,14 +781,14 @@ export function loadOcrConfig(): OcrConfig {
 
 **测试 PDF 必须随仓库提交**，否则 CI/他人 clone 后跑不了。挑一份简单到 Audiveris 几乎不会认错的（单谱表四分音符 C 大调音阶），保证测试稳定。
 
-### 9.3 第三层：E2E（Playwright，手动跑）
+### 10.3 第三层：E2E（Playwright，手动跑）
 
 现有 `e2e/practice-flow.spec.ts` 加一个 case：
 
 - 上传测试 PDF → 看到"识别中"→ 等待 done → 自动跳转 PracticePage → OSMD 渲染出 SVG 音符 → 断言渲染成功。
 - 标记 `test.fixme` 在无 Java 环境下，避免 CI 红。
 
-### 9.4 不测什么（YAGNI）
+### 10.4 不测什么（YAGNI）
 
 - 不测 Audiveris 本身的识别准确率（那是它项目的事）。
 - 不测打包后的 App 安装流程（手动验收）。
@@ -717,27 +796,29 @@ export function loadOcrConfig(): OcrConfig {
 
 ---
 
-## 10. 分阶段实施
+## 11. 分阶段实施
 
 拆成四个独立可验证阶段，每阶段产出能独立运行，降低风险：
 
 ### 阶段 A：后端 OCR 核心（不碰 Tauri）
 
+- 重构 `extractMetadata` → 导出 `extractMusicXmlMetadata(root, fallbackTitle)`
+- `insertScore` 加可选 `sourceFormat` 参数；`ScoreSummary`/`FullScore`/`listScores`/`getFullScore` 打通 `sourceFormat` 链路
 - 新建 `ocr_tasks` 表 + taskRepo
-- 实现 `OcrEngine`（spawn java、解析输出、错误码）
-- 实现 `OcrRunner`（状态机、insertScore 回填）
-- 新建 `/api/ocr`、`/api/ocr/:id`、`DELETE /api/ocr/:id`、`/api/health` 路由
+- 实现 `OcrEngine`（spawn java、解析 `.mxl`/`.xml` 输出、错误码）
+- 实现 `OcrRunner`（状态机、insertScore 回填 sourceFormat='ocr'）
+- 新建 `/api/ocr`（含 409 串行约束）、`/api/ocr/:id`、`DELETE /api/ocr/:id`、`/api/health` 路由
 - 第一层 + 第二层测试
-- **验收**：开发者本机装 Java + 放 jar，用 curl/Postman 跑通整个 OCR 流程
+- **验收**：开发者本机装 Java + 放 jar，用 curl/Postman 跑通整个 OCR 流程（含 409 并发拒绝、.mxl 解析、sourceFormat='ocr' 入库）
 
 ### 阶段 B：前端接入（仍不碰 Tauri）
 
-- `lib/api.ts` 加 3 个 OCR 方法 + health
-- `useOcrTask` hook
-- `OcrTaskCard` 组件
-- ImportPage 分区改造
+- `lib/api.ts` 加 `sourceFormat` 字段 + 3 个 OCR 方法 + health
+- `useOcrTask` hook（区分网络 error 与任务 failed）
+- `OcrTaskCard` 组件（三态 + 重试/放弃）
+- ImportPage 分区改造（MusicXML 区 + 扫描识别区）；挂载时 ping `/api/health` 预判降级；处理 409
 - LibraryPage sourceFormat 标签
-- **验收**：浏览器开 dev server，上传测试 PDF，走完创建→轮询→跳转流程；后端不可达时显示降级提示
+- **验收**：浏览器开 dev server，上传测试 PDF，走完创建→轮询→跳转流程；后端不可达时显示降级提示；双击上传时第二个请求被 409 拒绝并提示
 
 ### 阶段 C：Tauri 后端进程打包
 
@@ -758,32 +839,35 @@ export function loadOcrConfig(): OcrConfig {
 
 ---
 
-## 11. 改动清单
+## 12. 改动清单
 
 ### 后端（`server/src/`）
 
 | 文件 | 操作 | 说明 |
 |------|------|------|
 | `db/schema.ts` | 修改 | 追加 `ocrTasks` 表定义 |
-| `db/repo.ts` | 修改 | 追加 taskRepo CRUD（或新建 `db/taskRepo.ts`） |
+| `db/repo.ts` | 修改 | `insertScore` 加可选 `sourceFormat` 参数；`ScoreSummary`/`FullScore` 加 `sourceFormat` 字段；`listScores`/`getFullScore` 返回该字段；追加 taskRepo CRUD（或新建 `db/taskRepo.ts`） |
+| `routes/scores.ts` | 无需改 | 透传 repo 返回（`sourceFormat` 已含） |
+| `parsing/musicxml.ts` | 修改 | 将私有 `extractMetadata` 重构导出为 `extractMusicXmlMetadata(root, fallbackTitle)`，供 OcrEngine 复用；`MusicXmlParser` 传 `'Untitled'` 保持现状 |
+| `parsing/musicxml.test.ts` | 修改 | 补 `extractMusicXmlMetadata` 的 fallback 参数测试 |
 | `ocr/config.ts` | 新建 | `loadOcrConfig()` 从环境变量读路径 |
-| `ocr/engine.ts` | 新建 | `OcrEngine` 类（spawn java、解析输出、错误码） |
-| `ocr/runner.ts` | 新建 | `OcrRunner` 类（状态机、任务编排） |
-| `routes/ocr.ts` | 新建 | `createOcrRoute(db)`：3 个 OCR 端点 |
-| `routes/health.ts` | 新建 | `/api/health` 端点 |
+| `ocr/engine.ts` | 新建 | `OcrEngine` 类（spawn java、解析 `.mxl`/`.xml` 输出、错误码；复用 `extractMxl` + `extractMusicXmlMetadata`） |
+| `ocr/runner.ts` | 新建 | `OcrRunner` 类（状态机、任务编排、insertScore 回填 sourceFormat='ocr'） |
+| `routes/ocr.ts` | 新建 | `createOcrRoute(db)`：3 个 OCR 端点 + **409 串行约束**（查 pending/running 任务则拒绝） |
+| `routes/health.ts` | 新建 | `/api/health` 端点（含 OCR 引擎可用性 + reason 码） |
 | `index.ts` | 修改 | 挂载 ocr + health 路由，初始化 OcrEngine/Runner |
-| `ocr/__tests__/*.test.ts` | 新建 | 第一层单测 |
+| `ocr/__tests__/*.test.ts` | 新建 | 第一层单测（含 409 串行、.mxl 解析、错误码映射） |
 | `ocr/__tests__/integration.test.ts` | 新建 | 第二层集成测试（skipIf 守卫） |
 
 ### 前端（`app/src/`）
 
 | 文件 | 操作 | 说明 |
 |------|------|------|
-| `lib/api.ts` | 修改 | 加 `createOcrTask`/`fetchOcrTask`/`cancelOcrTask`/`fetchHealth` |
-| `hooks/useOcrTask.ts` | 新建 | 轮询 hook |
-| `components/OcrTaskCard.tsx` | 新建 | 任务卡片组件（三态渲染） |
-| `pages/ImportPage.tsx` | 修改 | 分区改造：MusicXML 区 + 扫描识别区 |
-| `pages/LibraryPage.tsx` | 修改 | sourceFormat='ocr' 显示小标签 |
+| `lib/api.ts` | 修改 | `ScoreSummary`/`ScoreData` 加 `sourceFormat` 字段；加 `createOcrTask`/`fetchOcrTask`/`cancelOcrTask`/`fetchHealth` |
+| `hooks/useOcrTask.ts` | 新建 | 轮询 hook（区分网络 error 与任务 failed） |
+| `components/OcrTaskCard.tsx` | 新建 | 任务卡片组件（三态渲染：running/done/failed + 重试/放弃） |
+| `pages/ImportPage.tsx` | 修改 | 分区改造：MusicXML 区 + 扫描识别区；挂载时 ping `/api/health` 预判降级；处理 409（已有任务运行中） |
+| `pages/LibraryPage.tsx` | 修改 | 基于 `score.sourceFormat === 'ocr'` 渲染「📷 扫描识别」标签 |
 
 ### Tauri（`src-tauri/`）
 
@@ -804,19 +888,28 @@ export function loadOcrConfig(): OcrConfig {
 
 ---
 
-## 12. 风险与未决问题
+## 13. 风险与未决问题
 
 | 风险 | 影响 | 缓解 |
 |------|------|------|
-| Audiveris CLI 实际参数与文档不符 | 阶段 A 卡住 | 阶段 A 最先做，先在命令行手动调通再写代码 |
+| **AGPL-3.0 许可证传染**（review P2） | 整个项目可能需转 AGPL | **第 9 节已列选项，需用户决策 A/B/C/D。本设计天然进程隔离契合选项 B** |
+| Audiveris CLI 实际参数与文档不符 | 阶段 A 卡住 | review P0 已修正为 positional + `-transcribe`；阶段 A 先命令行手动调通再写代码 |
+| Audiveris 输出 `.mxl`（压缩）而非 `.xml` | 引擎读不到输出 | review P0 已修正，复用 `extractMxl()` 解压；扫描同时匹配 `.mxl`/`.xml` |
 | better-sqlite3 `.node` 在 sidecar 模式加载失败 | 桌面 App 起不来 | 阶段 C 独立验证，必要时用 SQLite WASM 替换 |
-| jlink 生成的 JRE 缺 Audiveris 所需模块 | 桌面识别崩 | 逐步加模块，`-add-modules` 按错误信息迭代 |
+| jlink 生成的 JRE 缺 Audiveris 所需模块 | 桌面识别崩 | 逐步加模块，`-add-modules` 按错误信息迭代；至少含 `java.desktop` |
 | Tesseract 找不到 tessdata | 识别崩 | 7.5 的 `TESSDATA_PREFIX` 注入契约 |
 | 安装包体积过大（>300MB）用户不接受 | 分发困难 | 可考虑首次启动时下载 JRE/Audiveris（但违背零配置）—— MVP 先全打包 |
-| 多页 PDF 只取首页，用户期望全曲 | 体验缺陷 | 8.1 已声明限制，后续迭代 |
+| 多页 PDF 只取首页，用户期望全曲 | 体验缺陷 | 8.8 已声明限制（`-sheets 1` 强制），后续迭代 |
 
 **未决问题（实施时再定，不阻塞 spec）：**
 
 - macOS MVP 选 Intel 还是 ARM 作为首发架构（取决于目标用户）。
 - 是否在 ImportPage 提供"识别参数"高级选项（MVP 不做，纯默认）。
 - 任务历史是否在某个页面展示（MVP 不做，任务行仅作内部状态，done 后用户从 Library 看 score）。
+
+**已解决的 Open Question（review 提出）：**
+
+- **`extractMetadata` 私有 + fallback 不一致**：重构 `musicxml.ts`，将私有 `extractMetadata(root, sourceXml)` 改为导出 `extractMusicXmlMetadata(root, fallbackTitle)`，第二参数接受标题 fallback。
+  - `MusicXmlParser` 调用：`extractMusicXmlMetadata(root, 'Untitled')`（保持现状行为）。
+  - `OcrEngine` 调用：`extractMusicXmlMetadata(root, fileNameWithoutExt)`（OCR 独有规则：扫描谱常无标题，用文件名更有意义）。
+  - 两者共用同一元数据提取逻辑（标题/作曲家/tempo），仅 fallback 来源不同，不重复代码也不破坏现有测试。
