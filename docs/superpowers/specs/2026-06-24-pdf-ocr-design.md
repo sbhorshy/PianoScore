@@ -715,45 +715,50 @@ export function loadOcrConfig(): OcrConfig {
 
 ---
 
-## 9. 许可证合规风险：AGPL-3.0（⚠ 需用户决策）
+## 9. 许可证合规：AGPL-3.0（已决策 B：进程隔离）
 
-> **这一节是 review 提出的阻塞性问题，涉及项目整体许可证走向，必须由项目所有者（你）决策后才能固化。下面是事实陈述和选项分析。**
+> **决策（2026-06-25）：选项 B —— 进程隔离 + 保留 MIT。** 本设计架构天然满足"arm's length"边界，配套合规措施见 9.4。
 
 ### 9.1 事实
 
 - **Audiveris 采用 AGPL-3.0 许可证**（[GitHub](https://github.com/Audiveris/audiveris)）。
-- **PianoScore 当前是 MIT 许可证**（README、LICENSE）。
-- AGPL-3.0 比 GPL 更严格，有**网络条款**：用户即使通过网络远程访问（不只分发二进制），也必须能获得对应源码。
+- **PianoScore 当前是 MIT 许可证**（README、LICENSE），**保留不变**。
+- AGPL-3.0 比 GPL 更严格，有**网络条款**：用户即使通过网络远程访问，也必须能获得对应源码。
 
-### 9.2 风险：copyleft 传染
+### 9.2 风险：copyleft 传染（如何触发）
 
-将 Audiveris jar 整合进 PianoScore 并随 App 分发，会触发 AGPL 的 copyleft：
+把 AGPL jar **静态链接/打包并作为组合作品分发**会触发 copyleft，要求整个 PianoScore 以 AGPL-3.0 开源。这与当前 MIT 冲突。**但本设计不触发**，原因见 9.3。
 
-- **组合作品（derivative work）**：把 AGPL jar 打进 App，整个 PianoScore（含 React 前端、Hono 后端、Tauri 壳）会被要求以 AGPL-3.0 开源。
-- **这与当前 MIT 许可证冲突**：MIT 是宽松许可，AGPL 是强 copyleft，两者组合时 AGPL 占主导（MIT 代码可被 AGPL 包含，但组合产物整体 AGPL）。
-- **是否修改 Audiveris 不影响传染**：即使原样打包不修改，只要分发就需提供源码；若修改还需声明改动。
+### 9.3 本设计的进程隔离边界（为何不构成组合作品）
 
-### 9.3 选项（需决策）
+本设计从一开始就是"arm's length 进程隔离"架构：
 
-| 选项 | 做法 | 影响 |
-|------|------|------|
-| **A. 接受 AGPL，整个项目转 AGPL-3.0** | 把 PianoScore LICENSE 从 MIT 改为 AGPL-3.0，README 声明，提供 Audiveris 源码获取途径 | 合规最简单，但项目从 MIT 变 AGPL，影响后续商业使用和社区贡献 |
-| **B. 进程隔离 + 保留 MIT** | Audiveris 作为**独立进程**通过命令行调用（本设计正是如此！），PianoScore 不链接 Audiveris 代码，理论上不构成组合作品 | **法律灰区**。多数律师认为"独立进程 + 命令行"不触发 copyleft（arm's length），但无判例保证。需在 README 声明 Audiveris 是独立 AGPL 组件，单独提供其源码 |
-| **C. 不打包 jar，运行时下载** | App 不分发 jar，首次启动时从官方源下载 Audiveris jar 到用户机器 | 不构成"分发"，规避 copyleft。但违背"全打包零配置"目标，依赖网络，且 jar 下载源稳定性存疑 |
-| **D. 放弃 Audiveris，找宽松许可的 OMR** | 寻找 MIT/Apache 许可的 OMR 引擎 | 绕开问题，但 Audiveris 是目前最成熟的开源 OMR，替代品（如 oemer）识别率/成熟度差距大 |
+- 后端用 `child_process.spawn('java', ...)` 调 Audiveris，**PianoScore 代码不 import 任何 Audiveris Java 类**。
+- 两者仅通过**文件系统交换数据**（输入 PDF / 输出 `.mxl`），无内存共享、无 IPC 嵌入、无 JNI 调用。
+- 这是 GPL/AGPL 社区公认的"非组合作品"边界（独立进程 + 命令行 + 文件交换）。
 
-### 9.4 本设计对选项 B 的天然契合
+**法律免责说明**：进程隔离在司法上无判例，属法律灰区。下文 9.4 的措施用于在灰区内尽量降低风险。最终合规判断应由项目方咨询法务确认。
 
-**关键：本设计从一开始就是"进程隔离"架构**——后端用 `child_process.spawn('java', ...)` 调 Audiveris，PianoScore 代码**不 import 任何 Audiveris 类**，通过文件系统交换数据（输入 PDF / 输出 MusicXML）。这是 GPL/AGPL 社区公认的"不构成组合作品"的边界。
+### 9.4 合规措施（实施阶段 A 落地）
 
-**但仍需法务确认**：进程隔离在司法上无判例。建议如果选 B，采取以下措施降低风险：
-1. README 明确声明 Audiveris 是独立 AGPL 组件，其 jar 单独获取（即使打包也声明来源）。
-2. 提供 Audiveris 源码获取方式（链接到官方 GitHub + 标明所用版本/commit）。
-3. 不修改 Audiveris（用官方 release jar）。
+| 措施 | 落地位置 | 何时做 |
+|------|----------|--------|
+| README 新增"第三方组件"章节 | `README.md` | 阶段 A |
+| 声明 Audiveris 为独立 AGPL 组件，标明所用版本 + commit + 官方源链接 | `README.md` 第三方组件章节 | 阶段 A |
+| 提供 Audiveris 源码获取方式（官方 GitHub 链接 + 版本号） | `README.md` + `LICENSE-THIRD-PARTY.md`（新建） | 阶段 A |
+| 打包时**使用官方 release jar，不修改** | 打包脚本（阶段 D） | 阶段 D |
+| 保留 AGPL-3.0 全文副本供 Audiveris 组件 | `LICENSES/AGPL-3.0.txt`（新建） | 阶段 A |
+| LICENSE 文件顶部声明 PianoScore 本身仍为 MIT，第三方组件单独列示 | `LICENSE`（追加声明段） | 阶段 A |
 
-### 9.5 待决策（阻塞 spec 固化）
+**新增文件清单（合规相关）：**
+- `LICENSE-THIRD-PARTY.md`：列出 Audiveris（AGPL-3.0）、Tesseract（Apache-2.0）等第三方组件的版本、源链接、许可证。
+- `LICENSES/AGPL-3.0.txt`：AGPL-3.0 许可证全文。
 
-**请选择 9.3 的 A / B / C / D 之一。** 在此之前，spec 的其他技术章节已按"假设选 B（进程隔离）"编写，因为这是本架构的天然形态。若选 A，则需追加 LICENSE 文件变更；若选 C，则需重写第 7 节打包策略；若选 D，则整个设计推翻重来。
+### 9.5 不选其他选项的原因（备查）
+
+- **A（转 AGPL）**：项目整体许可证变更，影响后续商业使用和社区贡献，超出本功能整合的合理边界。
+- **C（运行时下载）**：违背用户已确认的"全打包零配置"目标。
+- **D（换 OMR）**：Audiveris 是当前最成熟开源 OMR，替代品（oemer 等）识别率/成熟度差距大，本设计的核心价值在 Audiveris 的识别能力。
 
 ---
 
@@ -802,6 +807,7 @@ export function loadOcrConfig(): OcrConfig {
 
 ### 阶段 A：后端 OCR 核心（不碰 Tauri）
 
+- **AGPL 合规文件**：README 第三方组件章节 + LICENSE-THIRD-PARTY.md + LICENSES/AGPL-3.0.txt + LICENSE 声明段（见第 9.4 节）
 - 重构 `extractMetadata` → 导出 `extractMusicXmlMetadata(root, fallbackTitle)`
 - `insertScore` 加可选 `sourceFormat` 参数；`ScoreSummary`/`FullScore`/`listScores`/`getFullScore` 打通 `sourceFormat` 链路
 - 新建 `ocr_tasks` 表 + taskRepo
@@ -809,7 +815,7 @@ export function loadOcrConfig(): OcrConfig {
 - 实现 `OcrRunner`（状态机、insertScore 回填 sourceFormat='ocr'）
 - 新建 `/api/ocr`（含 409 串行约束）、`/api/ocr/:id`、`DELETE /api/ocr/:id`、`/api/health` 路由
 - 第一层 + 第二层测试
-- **验收**：开发者本机装 Java + 放 jar，用 curl/Postman 跑通整个 OCR 流程（含 409 并发拒绝、.mxl 解析、sourceFormat='ocr' 入库）
+- **验收**：开发者本机装 Java + 放 jar，用 curl/Postman 跑通整个 OCR 流程（含 409 并发拒绝、.mxl 解析、sourceFormat='ocr' 入库）；合规文件齐全
 
 ### 阶段 B：前端接入（仍不碰 Tauri）
 
@@ -878,6 +884,15 @@ export function loadOcrConfig(): OcrConfig {
 | `tauri.conf.json` | 修改 | 配 externalBin（node）+ resources（server/jre/audiveris） |
 | `build.rs` 或打包脚本 | 新建 | jlink JRE 构建、esbuild bundle、better-sqlite3 预编译 |
 
+### 合规文件（AGPL 措施，阶段 A）
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `README.md` | 修改 | 新增"第三方组件"章节，声明 Audiveris（AGPL-3.0）为独立进程组件，标明版本/commit/源链接 |
+| `LICENSE` | 修改 | 顶部声明 PianoScore 本身仍为 MIT，追加段提示第三方组件见 `LICENSE-THIRD-PARTY.md` |
+| `LICENSE-THIRD-PARTY.md` | 新建 | 列 Audiveris（AGPL-3.0）、Tesseract（Apache-2.0）等组件的版本、源链接、许可证 |
+| `LICENSES/AGPL-3.0.txt` | 新建 | AGPL-3.0 许可证全文副本 |
+
 ### 测试资产
 
 | 文件 | 操作 | 说明 |
@@ -892,7 +907,7 @@ export function loadOcrConfig(): OcrConfig {
 
 | 风险 | 影响 | 缓解 |
 |------|------|------|
-| **AGPL-3.0 许可证传染**（review P2） | 整个项目可能需转 AGPL | **第 9 节已列选项，需用户决策 A/B/C/D。本设计天然进程隔离契合选项 B** |
+| **AGPL-3.0 许可证传染**（review P2） | 整个项目可能需转 AGPL | **已决策选项 B（进程隔离）。第 9 节定义合规措施：README/LICENSE 声明 + 第三方许可证文件 + 不修改官方 jar。属法律灰区，建议项目方咨询法务** |
 | Audiveris CLI 实际参数与文档不符 | 阶段 A 卡住 | review P0 已修正为 positional + `-transcribe`；阶段 A 先命令行手动调通再写代码 |
 | Audiveris 输出 `.mxl`（压缩）而非 `.xml` | 引擎读不到输出 | review P0 已修正，复用 `extractMxl()` 解压；扫描同时匹配 `.mxl`/`.xml` |
 | better-sqlite3 `.node` 在 sidecar 模式加载失败 | 桌面 App 起不来 | 阶段 C 独立验证，必要时用 SQLite WASM 替换 |
