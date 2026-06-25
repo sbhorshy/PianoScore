@@ -7,12 +7,16 @@ license = "MIT"
 repository = ""
 edition = "2021"
 rust-version = "1.70"
+build = "build.rs"
+
+[package.metadata.bundle]
+identifier = "com.pianoscore.app"
 
 [build-dependencies]
 tauri-build = { version = "1.5.0", features = [] }
 
 [dependencies]
-tauri = { version = "1.5.0", features = ["shell-open", "dialog-open", "dialog-save", "fs-read-file", "fs-write-file"] }
+tauri = { version = "1.5.0", features = [ "fs-remove-file", "fs-rename-file", "fs-create-dir", "fs-exists", "fs-remove-dir", "shell-open", "dialog-open", "dialog-save", "fs-read-file", "fs-write-file"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
