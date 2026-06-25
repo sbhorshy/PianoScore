@@ -64,16 +64,17 @@ PianoScore/
 │       │   ├── extractTargets.test.ts # 11 个连音线 (Tie) 提取测试 (与 __tests__/ 版分离)
 │       │   └── __tests__/
 │       │       ├── extractTargets.test.ts  # 9 个提取逻辑测试 (staff→hand, rest, duration ×4)
-│       │       ├── audio.test.ts           # 42 个音频测试 (ToneJsOutput + WebAudioSynth + MidiOutput + midiToNoteName)
+│       │       ├── audio.test.ts           # 44 个音频测试 (ToneJsOutput + WebAudioSynth + MidiOutput + midiToNoteName + 时钟契约)
 │       │       └── realvalue-units.test.ts # 7 个 RealValue→durationBeats ×4 转换回归
 │       ├── hooks/
 │       │   ├── usePractice.ts         # 练习状态机 (双状态: PositionState + ScoringState, noteOn/noteOff)
-│       │   ├── usePlayback.ts         # 🔊 自动回放 hook (useClock + tempoTick 驱动光标; buildNoteEvents 事件表驱动音频, 复音延音; 无 onsetBeat 时回退旧的按 index 发声)
+│       │   ├── usePlayback.ts         # 🔊 自动回放 hook (listen 模式: useClock + tempoTick 驱动光标; buildNoteEvents 事件表驱动音频, 复音延音; 无 onsetBeat 时回退旧的按 index 发声)
+│       │   ├── useTempoPosition.ts    # 跟练模式节拍驱动位置 hook (useClock + tempoTick 推进 + settle-on-advance; StrictMode 安全)
 │       │   ├── useClock.ts            # rAF 驱动的时钟 hook (跟练/听音模式节拍源)
 │       │   ├── useScore.ts            # 获取单首曲谱 (含 sourceXml)
 │       │   ├── useScores.ts           # 曲谱列表 + 导入 + 删除
 │       │   ├── useSettings.ts         # 设置持久化 (localStorage)
-│       │   ├── useMIDI.ts             # Web MIDI API 接入 (输入 + 输出)
+│       │   ├── useMIDI.ts             # Web MIDI API 接入 (输入 only; 输出半边已移除, 见 useMidiOutput 待重引入)
 │       │   └── __tests__/
 │       │       ├── usePractice.test.ts     # 13 个 hook 测试 (free/follow/listen 状态推进, jsdom)
 │       │       ├── usePlayback.test.ts     # 12 个回放测试 (play/stop/和弦/空 targets/null output)
@@ -343,8 +344,9 @@ VirtualKeyboard: onClick → onNoteOn(midi) → handleNoteOn(midi); heldNotes/ac
 | Hook | 状态 | 用途 |
 |------|------|------|
 | `useSettings` | `{ referenceTone, chordWindowMs }` | 设置持久化 |
-| `usePlayback` | `{ play, stop, isPlaying, currentPosition }` | 自动回放 (listen/follow 模式) |
-| `useMIDI` | `{ isSupported, isConnected, devices[], lastNoteEvent, outputs[], selectedOutput, sendNoteOn, sendNoteOff }` | MIDI 设备管理 (输入+输出) |
+| `usePlayback` | `{ play, stop, isPlaying, currentPosition }` | 自动回放 (listen 模式; 光标+音频) |
+| `useTempoPosition` | `{ position, reset, tick }` | 跟练模式节拍驱动位置 (光标推进 + settle-on-advance) |
+| `useMIDI` | `{ isSupported, isConnected, devices[], selectedDevice, lastNoteEvent, connect, disconnect, error }` | MIDI 输入捕获 (输入 only; 输出半边已移除, 待 useMidiOutput 重引入) |
 | `useScores` | `{ scores[], isLoading, error, refresh(), importScore(), removeScore() }` | 曲谱列表 |
 | `useScore` | `{ score, isLoading, error }` | 单首曲谱 (含 sourceXml) |
 | `usePractice` | `{ scoringState, positionState, handleNoteOn, handleNoteOff, reset, isComplete, summary }` | 练习状态机 (双状态) |
@@ -509,12 +511,12 @@ npm run tauri-build   # 生产构建
 
 ## 7. 测试
 
-### 前端测试 (199 个)
+### 前端测试 (207 个)
 
 | 文件 | 测试数 | 覆盖范围 |
 |------|--------|----------|
 | `app/src/scoring/engine.test.ts` | 40 | judgeNoteOn/judgeNoteOff/settleTarget/summarize（含位置追踪、heldNotes、和弦窗口） |
-| `app/src/services/__tests__/audio.test.ts` | 42 | ToneJsOutput + WebAudioSynth + MidiOutput + midiToNoteName |
+| `app/src/services/__tests__/audio.test.ts` | 44 | ToneJsOutput + WebAudioSynth + MidiOutput + midiToNoteName + now()/toTimestamp 时钟契约 |
 | `app/src/scoring/position.test.ts` | 24 | initPositionState、advancePosition、handleJudgment、tempoTick、buildTargetTimeline、isPositionComplete |
 | `app/src/hooks/__tests__/usePractice.test.ts` | 13 | free/follow/listen 模式状态推进、settleTarget、settlements |
 | `app/src/hooks/__tests__/usePlayback.test.ts` | 12 | 自动回放 (play/stop/noteOn/noteOff/和弦/空 targets/null output/stoppedRef) |
@@ -525,9 +527,10 @@ npm run tauri-build   # 生产构建
 | `app/src/scoring/rangeFilter.test.ts` | 8 | measureNumber 范围过滤、null range、边界情况 |
 | `app/src/services/__tests__/realvalue-units.test.ts` | 7 | RealValue→durationBeats ×4 转换回归、端到端时序（120/60 BPM） |
 | `app/src/hooks/__tests__/useClock.test.ts` | 6 | rAF 时序、elapsed 递增、tempo 重置、unmount 清理 |
+| `app/src/hooks/__tests__/useTempoPosition.test.ts` | 4 | 跟练位置推进 settle-on-advance、StrictMode 不双倍累计、onComplete 单次触发、reset 重置 |
 | `app/src/hooks/__tests__/fast-tempo.test.ts` | 5 | 快速节拍回归（高 BPM 下时序不漂移） |
 
-> 合计 199 个测试。前端 vitest 配置: `app/vitest.config.ts`（默认 environment: 'node'）。hook 测试使用 `@vitest-environment jsdom` 逐文件覆盖。
+> 合计 207 个测试。前端 vitest 配置: `app/vitest.config.ts`（默认 environment: 'node'）。hook 测试使用 `@vitest-environment jsdom` 逐文件覆盖。
 > 注意 `extractTargets.test.ts` 同时存在两份：`services/extractTargets.test.ts`（连音线专项，11 个）和 `services/__tests__/extractTargets.test.ts`（基础提取，9 个）。
 
 ### 后端测试 (16 个)
@@ -602,7 +605,7 @@ cd app && npm install                # 安装依赖
 cd app && npm run dev                # Vite 开发服务器 :5173
 cd app && npm run build              # tsc + Vite 生产构建
 cd app && npm run lint               # ESLint
-cd app && npx vitest run             # 运行所有前端测试 (199 个)
+cd app && npx vitest run             # 运行所有前端测试 (207 个)
 cd app && npx vitest                 # 测试 watch 模式
 cd app && npx vitest run src/scoring/engine.test.ts  # 单个测试文件
 
