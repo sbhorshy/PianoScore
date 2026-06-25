@@ -5,6 +5,9 @@ import { Hono } from 'hono'
 import { createImportRoute } from '../import.js'
 import { createScoresRoute } from '../scores.js'
 import { createSessionsRoute } from '../sessions.js'
+import { createOcrRoute } from '../ocr.js'
+import type { OcrEngine } from '../../ocr/engine.js'
+import type { OcrRunner } from '../../ocr/runner.js'
 import type { Db } from '../../db/client.js'
 
 export interface TestApp {
@@ -13,7 +16,10 @@ export interface TestApp {
   close: () => void
 }
 
-export function createTestApp(): TestApp {
+export function createTestApp(ocr?: {
+  engine: OcrEngine
+  runner: OcrRunner
+}): TestApp {
   const sqlite = new Database(':memory:')
   sqlite.pragma('journal_mode = WAL')
   sqlite.pragma('foreign_keys = ON')
@@ -43,12 +49,39 @@ export function createTestApp(): TestApp {
       practice_mode TEXT NOT NULL DEFAULT 'both',
       completed INTEGER NOT NULL DEFAULT 1
     );
+
+    CREATE TABLE ocr_tasks (
+      id TEXT PRIMARY KEY,
+      status TEXT NOT NULL,
+      input_format TEXT NOT NULL,
+      input_file_name TEXT NOT NULL,
+      input_path TEXT,
+      score_id TEXT,
+      error_code TEXT,
+      error_detail TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      started_at INTEGER,
+      completed_at INTEGER
+    );
   `)
 
   const app = new Hono()
   app.route('/api/scores', createScoresRoute(db))
   app.route('/api/scores', createSessionsRoute(db))
   app.route('/api/import', createImportRoute(db))
+
+  // health：可用性由传入 engine 决定（未注入时报告不可用）
+  app.get('/api/health', async (c) => {
+    if (ocr) {
+      const h = await ocr.engine.healthCheck()
+      return c.json({ status: 'healthy', ocr: { available: h.ok, reason: h.reason } })
+    }
+    return c.json({ status: 'healthy', ocr: { available: false, reason: 'no_audiveris' } })
+  })
+
+  if (ocr) {
+    app.route('/api/ocr', createOcrRoute(db, ocr.runner))
+  }
 
   return {
     app,

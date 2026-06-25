@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { MusicXmlParser } from './musicxml'
+import { MusicXmlParser, isZip, extractMusicXmlMetadata } from './musicxml'
 import { ParseError } from './parser'
 
 const enc = (s: string) => new TextEncoder().encode(s)
@@ -94,5 +94,26 @@ describe('MusicXmlParser', () => {
     expect(parser.canParse('test.xml', new Uint8Array())).toBe(true)
     expect(parser.canParse('test.mxl', new Uint8Array())).toBe(true)
     expect(parser.canParse('test.pdf', new Uint8Array())).toBe(false)
+  })
+})
+
+describe('exported musicxml helpers', () => {
+  it('isZip detects PK magic bytes', () => {
+    expect(isZip(new Uint8Array([0x50, 0x4b, 0x03, 0x04, 0]))).toBe(true)
+    expect(isZip(new Uint8Array([0x1f, 0x8b, 0x08, 0]))).toBe(false) // gzip
+  })
+
+  it('extractMusicXmlMetadata uses provided fallback title', () => {
+    // 无 work-title/movement-title 的根
+    const root = { 'part-list': { 'score-part': { id: 'P1' } } }
+    const meta = extractMusicXmlMetadata(root as never, '<xml/>', 'my-score')
+    expect(meta.title).toBe('my-score')
+    expect(meta.tempo).toBe(120) // 默认
+  })
+
+  it('extractMusicXmlMetadata prefers real title over fallback', () => {
+    const root = { work: { 'work-title': 'Real Title' } }
+    const meta = extractMusicXmlMetadata(root as never, '<xml/>', 'fallback')
+    expect(meta.title).toBe('Real Title')
   })
 })

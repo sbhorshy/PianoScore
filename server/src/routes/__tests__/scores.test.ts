@@ -55,4 +55,21 @@ describe('Scores API', () => {
     expect(body.sourceXml).toContain('Integration Test')
     expect(body.sourceXml).toContain('<score-partwise')
   })
+
+  it('list returns sourceFormat field', async () => {
+    await importScore()
+    const res = await test.app.request('/api/scores')
+    expect(res.status).toBe(200)
+    const body = (await res.json()) as { scores: Array<Record<string, unknown>> }
+    expect(body.scores[0]).toHaveProperty('sourceFormat')
+    expect(body.scores[0].sourceFormat).toBe('musicxml')
+  })
+
+  it('full score returns sourceFormat field', async () => {
+    const id = await importScore()
+    const res = await test.app.request(`/api/scores/${id}`)
+    const body = (await res.json()) as Record<string, unknown>
+    expect(body).toHaveProperty('sourceFormat')
+    expect(body.sourceFormat).toBe('musicxml')
+  })
 })

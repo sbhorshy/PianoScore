@@ -9,6 +9,7 @@ export interface ScoreSummary {
   title: string
   composer: string | null
   tempo: number
+  sourceFormat: string
 }
 
 export interface FullScore extends ScoreSummary {
@@ -16,14 +17,18 @@ export interface FullScore extends ScoreSummary {
 }
 
 // 持久化一首曲谱（元数据 + 原始 XML），返回新 id。
-export function insertScore(db: Db, parsed: ParsedScore): string {
+export function insertScore(
+  db: Db,
+  parsed: ParsedScore,
+  options?: { sourceFormat?: string },
+): string {
   const id = randomUUID()
   db.insert(scores).values({
     id,
     title: parsed.title,
     composer: parsed.composer ?? null,
     tempo: parsed.tempo,
-    sourceFormat: 'musicxml',
+    sourceFormat: options?.sourceFormat ?? 'musicxml',
     sourceXml: parsed.sourceXml,
   }).run()
   return id
@@ -36,6 +41,7 @@ export function listScores(db: Db): ScoreSummary[] {
     title: s.title,
     composer: s.composer,
     tempo: s.tempo,
+    sourceFormat: s.sourceFormat,
   }))
 }
 
@@ -47,6 +53,7 @@ export function getFullScore(db: Db, id: string): FullScore | null {
     title: s.title,
     composer: s.composer,
     tempo: s.tempo,
+    sourceFormat: s.sourceFormat,
     sourceXml: s.sourceXml,
   }
 }

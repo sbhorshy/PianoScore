@@ -20,7 +20,7 @@ const xml = new XMLParser({
 })
 
 // 从 .mxl（zip）中取出根 MusicXML 文档（需求 1.2）。
-function extractMxl(bytes: Uint8Array): string {
+export function extractMxl(bytes: Uint8Array): string {
   const files = unzipSync(bytes)
   // META-INF/container.xml 指向根文档；缺失则回退到第一个非 META-INF 的 .xml。
   const container = files['META-INF/container.xml']
@@ -37,7 +37,7 @@ function extractMxl(bytes: Uint8Array): string {
 }
 
 // zip 魔数 PK\x03\x04
-function isZip(b: Uint8Array): boolean {
+export function isZip(b: Uint8Array): boolean {
   return b[0] === 0x50 && b[1] === 0x4b && b[2] === 0x03 && b[3] === 0x04
 }
 
@@ -59,16 +59,20 @@ export class MusicXmlParser implements ScoreParser {
     }
     const root = (doc['score-partwise'] ?? doc['score-timewise']) as Record<string, unknown> | undefined
     if (!root) throw new ParseError('Not a MusicXML document', 'Missing <score-partwise> root')
-    return extractMetadata(root, text)
+    return extractMusicXmlMetadata(root, text)
   }
 }
 
-// 从 MusicXML 根对象提取元数据（标题、作曲家、速度）。
-function extractMetadata(root: Record<string, unknown>, sourceXml: string): ParsedScore {
+// 从 MusicXML 根对象提取元数据（标题、作曲家、速度）。fallbackTitle 用于缺标题时回退。
+export function extractMusicXmlMetadata(
+  root: Record<string, unknown>,
+  sourceXml: string,
+  fallbackTitle = 'Untitled',
+): ParsedScore {
   // 标题：<work><work-title> 或 <movement-title>
   const work = root['work'] as { 'work-title'?: string } | undefined
   const ident = root['identification'] as { creator?: unknown } | undefined
-  const title = work?.['work-title'] ?? (root['movement-title'] as string) ?? 'Untitled'
+  const title = work?.['work-title'] ?? (root['movement-title'] as string) ?? fallbackTitle
 
   // 作曲家：<identification><creator type="composer">
   const composer = asArray(ident?.creator)
