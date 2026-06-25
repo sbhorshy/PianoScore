@@ -33,6 +33,8 @@ export function useOcrTask(taskId: string | null): UseOcrTaskResult {
       setError(null)
       return
     }
+    // 局部固化非空 taskId，让闭包内拿到 string（TS 不延续闭包外 narrowing）
+    const id = taskId
 
     let stopped = false
     let timer: ReturnType<typeof setTimeout> | null = null
@@ -40,7 +42,7 @@ export function useOcrTask(taskId: string | null): UseOcrTaskResult {
     async function pollOnce() {
       if (stopped || !mountedRef.current) return
       try {
-        const status: OcrTaskStatus = await api.fetchOcrTask(taskId)
+        const status: OcrTaskStatus = await api.fetchOcrTask(id)
         if (stopped) return
         setError(null)
         // 终态转换 + 停轮询
