@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "{ FP=$(jq -r '.tool_input.file_path // .tool_response.filePath // empty'); echo \"$FP\" | grep -qE '(services/|scoring/|types/music|routes/|db/schema|components/Osmd|hooks/use|parsing/|e2e/|extractTargets|engine\\.ts|musicxml\\.ts)' && printf '{\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"The file %s was just edited and may affect CODEBASE_SUMMARY.md. Read the changed file and CODEBASE_SUMMARY.md, then make minimal targeted edits to update any outdated sections (types, data flow, API, schema, test structure, rendering, module descriptions). Do not rewrite the entire file — only fix what changed.\"}}\\n' \"$FP\" || echo '{}'; }"
+          }
+        ]
+      }
+    ]
+  }
+}
