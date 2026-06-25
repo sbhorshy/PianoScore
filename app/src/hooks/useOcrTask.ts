@@ -29,8 +29,9 @@ export function useOcrTask(taskId: string | null): UseOcrTaskResult {
   useEffect(() => {
     mountedRef.current = true
     if (!taskId) {
-      setState(null)
-      setError(null)
+      // 仅在确实需要重置时调用，避免无谓 setState
+      setState((prev) => (prev === null ? prev : null))
+      setError((prev) => (prev === null ? prev : null))
       return
     }
     // 局部固化非空 taskId，让闭包内拿到 string（TS 不延续闭包外 narrowing）

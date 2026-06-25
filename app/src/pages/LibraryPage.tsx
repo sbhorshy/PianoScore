@@ -24,7 +24,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog'
-import { Search, Trash2, ArrowUp, ArrowDown, X, Music, Clock, AlertCircle } from 'lucide-react'
+import { Search, Trash2, ArrowUp, ArrowDown, X, Music, Clock, AlertCircle, ScanLine } from 'lucide-react'
 import { useScores } from '@/hooks/useScores'
 import type { ScoreSummary } from '@/lib/api'
 
@@ -275,15 +275,17 @@ export default function LibraryPage() {
                   <CardContent>
                     <div className="flex items-center gap-4 text-sm text-muted-foreground">
                       <span className="flex items-center gap-1">
-                        <Music className="h-4 w-4" />
-                        {score.noteCount} notes
-                      </span>
-                      <span className="flex items-center gap-1">
                         <Clock className="h-4 w-4" />
                         <Badge variant="secondary" className="text-xs">
                           {score.tempo} BPM
                         </Badge>
                       </span>
+                      {score.sourceFormat === 'ocr' && (
+                        <Badge variant="outline" className="text-xs gap-1">
+                          <ScanLine className="h-3 w-3" />
+                          扫描识别
+                        </Badge>
+                      )}
                     </div>
                   </CardContent>
                 </Card>
