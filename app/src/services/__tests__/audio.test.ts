@@ -205,6 +205,31 @@ describe('MidiOutput', () => {
     expect(timestamp).toBeGreaterThanOrEqual(performance.now() - 5)
   })
 
+  it('schedules MIDI timestamps from the same seconds domain as now()', () => {
+    // timeSec is in the adapter's own seconds domain (returned by now()).
+    // now() returns performance.now()/1000, so a future time = now() + 0.5
+    // must translate to performance.now() in ms + 500 — NOT plus timeOrigin.
+    vi.spyOn(performance, 'now').mockReturnValue(1000)
+    try {
+      midiOut.noteOn(60, 127, midiOut.now() + 0.5)
+      const [, timestamp] = mockOutput.send.mock.calls.at(-1)!
+      expect(timestamp).toBeCloseTo(1500, 0)
+    } finally {
+      vi.restoreAllMocks()
+    }
+  })
+
+  it('clamps stale MIDI scheduled times to current performance time', () => {
+    vi.spyOn(performance, 'now').mockReturnValue(1000)
+    try {
+      midiOut.noteOff(60, midiOut.now() - 0.5)
+      const [, timestamp] = mockOutput.send.mock.calls.at(-1)!
+      expect(timestamp).toBe(1000)
+    } finally {
+      vi.restoreAllMocks()
+    }
+  })
+
   it('now() returns performance.now() in seconds', () => {
     const n = midiOut.now()
     expect(n).toBeCloseTo(performance.now() / 1000, 1)

@@ -14,20 +14,25 @@ export interface AudioOutput {
    * Start playing a note.
    * @param midi      MIDI note number.
    * @param velocity  0..127 (default 100).
-   * @param timeSec   Absolute AudioContext time (seconds) to trigger at, for
-   *                  sample-accurate scheduling of dense/fast passages. When
-   *                  omitted, the note fires immediately. Out-of-date times
-   *                  (already in the past) clamp to "now".
+   * @param timeSec   Absolute time in the adapter's own seconds domain to
+   *                  trigger at, for sample-accurate scheduling of dense/fast
+   *                  passages. Callers MUST derive this from the same adapter's
+   *                  now() — the domain differs per adapter (AudioContext time
+   *                  for Tone/WebAudio, performance.now()/1000 for MIDI) and
+   *                  mixing them desyncs scheduling. When omitted, the note
+   *                  fires immediately. Out-of-date times (already in the past)
+   *                  clamp to "now".
    */
   noteOn(midi: number, velocity?: number, timeSec?: number): void
   /**
    * Stop playing a note.
    * @param midi     MIDI note number.
-   * @param timeSec  Absolute AudioContext time (seconds) to release at; omit
-   *                 for immediate release.
+   * @param timeSec  Absolute time in the adapter's own seconds domain to
+   *                 release at; omit for immediate release. Must come from the
+   *                 same adapter's now(), as in noteOn.
    */
   noteOff(midi: number, timeSec?: number): void
-  /** The output's current AudioContext time in seconds (for scheduling). */
+  /** The adapter's current time in its own seconds domain (for scheduling). */
   now(): number
   /** Release any held resources. */
   dispose(): void
@@ -305,7 +310,11 @@ export class MidiOutput implements AudioOutput {
   /** MIDI scheduling uses performance.now() ms, not AudioContext seconds. */
   private toTimestamp(timeSec?: number): number | undefined {
     if (typeof timeSec !== 'number') return undefined
-    return Math.max(timeSec * 1000 + performance.timeOrigin, performance.now())
+    // timeSec is in the same seconds domain as now() (performance.now()/1000),
+    // so convert directly to ms — do NOT add performance.timeOrigin, which
+    // would double-count it (send already expects a DOMHighResTimeStamp,
+    // i.e. ms relative to timeOrigin, same base as performance.now()).
+    return Math.max(timeSec * 1000, performance.now())
   }
 
   now(): number {
