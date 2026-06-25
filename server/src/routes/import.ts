@@ -1,6 +1,6 @@
 import { Hono } from 'hono'
 import type { Db } from '../db/client.js'
-import { insertScore, listScores } from '../db/repo.js'
+import { getScoreSummary, insertScore } from '../db/repo.js'
 import { ParserRegistry, ParseError } from '../parsing/parser.js'
 import { MusicXmlParser } from '../parsing/musicxml.js'
 
@@ -37,7 +37,7 @@ export function createImportRoute(db: Db): Hono {
     try {
       const parsed = await parser.parse(bytes)
       const id = insertScore(db, parsed)
-      const summary = listScores(db).find((s) => s.id === id)
+      const summary = getScoreSummary(db, id)
       return c.json(summary, 201)
     } catch (err) {
       if (err instanceof ParseError) {

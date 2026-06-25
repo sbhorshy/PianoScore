@@ -16,6 +16,8 @@ export interface ScoreSummary {
   sourceFormat: string
 }
 
+export type PracticeMode = 'right' | 'left' | 'both'
+
 export interface SessionRecord {
   id: string
   scoreId: string
@@ -24,6 +26,7 @@ export interface SessionRecord {
   pitchAccuracy: number
   rhythmAccuracy: number
   durationSec: number
+  practiceMode: PracticeMode
   completed: boolean
 }
 
@@ -76,7 +79,7 @@ export interface NewSession {
   pitchAccuracy: number
   rhythmAccuracy: number
   durationSec: number
-  practiceMode: 'right' | 'left' | 'both'
+  practiceMode: PracticeMode
 }
 
 export async function recordSession(scoreId: string, s: NewSession): Promise<string> {

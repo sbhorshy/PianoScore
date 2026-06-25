@@ -45,6 +45,18 @@ export function listScores(db: Db): ScoreSummary[] {
   }))
 }
 
+export function getScoreSummary(db: Db, id: string): ScoreSummary | null {
+  const s = db.select().from(scores).where(eq(scores.id, id)).get()
+  if (!s) return null
+  return {
+    id: s.id,
+    title: s.title,
+    composer: s.composer,
+    tempo: s.tempo,
+    sourceFormat: s.sourceFormat,
+  }
+}
+
 export function getFullScore(db: Db, id: string): FullScore | null {
   const s = db.select().from(scores).where(eq(scores.id, id)).get()
   if (!s) return null

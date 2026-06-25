@@ -94,11 +94,9 @@ PianoScore/
 │       │   ├── position.ts            # PositionState 接口 + 纯函数 (advancePosition, handleJudgment, tempoTick)
 │       │   ├── playbackSchedule.ts     # buildNoteEvents: ScoringTarget[] → 排序的 noteOn/off 事件表 (复音延音)
 │       │   ├── rangeFilter.ts         # MeasureRange 接口 + filterTargetsByRange 纯函数
-│       │   ├── timeline.ts            # TargetTimeline 接口 + buildTimeline 函数
 │       │   ├── engine.test.ts         # 40 个评分测试
 │       │   ├── position.test.ts       # 24 个位置追踪测试
 │       │   ├── rangeFilter.test.ts    # 8 个范围过滤测试
-│       │   ├── timeline.test.ts       # 5 个时间线测试
 │       │   └── __tests__/
 │       │       └── playbackSchedule.test.ts  # 8 个复音回归测试
 │       └── types/
@@ -305,9 +303,9 @@ OsmdScore 组件: SVG 曲谱渲染
 - `isPositionComplete()` — 检查是否已完成所有 targets
 - `resetPosition()` — 重置位置状态
 
-**时间线预计算** (timeline.ts):
-- `buildTimeline(targets)` — 从 ScoringTarget[] 预计算每个 target 的节拍位置
-- `TargetTimeline` 接口 — 存储预计算的位置信息
+**时间线预计算** (位于 `position.ts`，作为 TempoDrivenPosition 的一部分):
+- `buildTargetTimeline(targets)` — 从 ScoringTarget[] 预计算每个 target 的节拍位置（`TargetTimelineEntry[]`）
+- `TargetTimeline` 类型别名 — 存储预计算的位置信息
 
 **配置** (`ScoringConfig`):
 - `chordWindowMs: 120` — 和弦收集窗口
@@ -527,7 +525,6 @@ npm run tauri-build   # 生产构建
 | `app/src/scoring/rangeFilter.test.ts` | 8 | measureNumber 范围过滤、null range、边界情况 |
 | `app/src/services/__tests__/realvalue-units.test.ts` | 7 | RealValue→durationBeats ×4 转换回归、端到端时序（120/60 BPM） |
 | `app/src/hooks/__tests__/useClock.test.ts` | 6 | rAF 时序、elapsed 递增、tempo 重置、unmount 清理 |
-| `app/src/scoring/timeline.test.ts` | 5 | buildTimeline 函数、TargetTimeline 接口 |
 | `app/src/hooks/__tests__/fast-tempo.test.ts` | 5 | 快速节拍回归（高 BPM 下时序不漂移） |
 
 > 合计 199 个测试。前端 vitest 配置: `app/vitest.config.ts`（默认 environment: 'node'）。hook 测试使用 `@vitest-environment jsdom` 逐文件覆盖。

@@ -72,4 +72,21 @@ describe('Scores API', () => {
     expect(body).toHaveProperty('sourceFormat')
     expect(body.sourceFormat).toBe('musicxml')
   })
+
+  it('import returns the created score summary without sourceXml', async () => {
+    const formData = new FormData()
+    formData.append('file', new File([TEST_MUSICXML], 'test.xml', { type: 'application/xml' }))
+
+    const res = await test.app.request('/api/import', {
+      method: 'POST',
+      body: formData,
+    })
+
+    expect(res.status).toBe(201)
+    const body = (await res.json()) as Record<string, unknown>
+    expect(body.id).toEqual(expect.any(String))
+    expect(body.title).toBe('Integration Test')
+    expect(body.sourceFormat).toBe('musicxml')
+    expect(body).not.toHaveProperty('sourceXml')
+  })
 })
