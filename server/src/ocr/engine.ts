@@ -70,13 +70,20 @@ export class OcrEngine {
     const outDir = path.join(path.dirname(input.filePath), 'out')
     await fs.mkdir(outDir, { recursive: true })
 
+    // 仅在显式配置时注入 TESSDATA_PREFIX；否则让 Audiveris 用系统默认路径
+    // （undefined 会被 Node 序列化成字面量 "undefined"，导致 Tesseract 找不到 tessdata）
+    const childEnv = { ...process.env }
+    if (this.config.tessdataDir) {
+      childEnv.TESSDATA_PREFIX = this.config.tessdataDir
+    }
+
     const child = spawn(this.config.javaBin, [
       '-jar', this.config.jarPath,
       '-batch', '-transcribe', '-export', '-sheets', '1',
       '-output', outDir,
       '--', input.filePath,
     ], {
-      env: { ...process.env, TESSDATA_PREFIX: this.config.tessdataDir },
+      env: childEnv,
     })
 
     await this.runWithTimeout(child)
@@ -114,7 +121,13 @@ export class OcrEngine {
     }
 
     // 复用元数据提取，fallback 用调用方传入的上传文件名
-    const meta = extractMusicXmlMetadata(root, xmlText, input.fallbackTitle)
+    // 显式挑出 meta 字段，避免 sourceXml 被带入（ParsedScore 含 sourceXml，但这里单独返回）
+    const parsed = extractMusicXmlMetadata(root, xmlText, input.fallbackTitle)
+    const meta = {
+      title: parsed.title,
+      composer: parsed.composer,
+      tempo: parsed.tempo,
+    }
 
     return { musicXml: xmlText, meta }
   }
@@ -148,6 +161,7 @@ export class OcrEngine {
 
       child.on('error', (err) => {
         clearTimeout(timer)
+        if (killed) return // timeout 已 reject
         reject(new OcrError('engine_crash', 'Failed to spawn Audiveris', String(err)))
       })
 
