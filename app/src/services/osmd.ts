@@ -38,6 +38,23 @@ interface TargetEntry {
 // ── Public API ──────────────────────────────────────────────────────────
 export type NoteClickCallback = (index: number) => void
 
+/** Result status for a completed target, mirrored from the component. */
+export type TargetVisualResult = 'correct' | 'wrong' | 'missed'
+
+/**
+ * Snapshot of what the practice UI wants drawn on the score.
+ * The service owns the color palette and the per-index policy; the React
+ * layer just feeds it this state.
+ */
+export interface PracticeViewState {
+  /** Currently-active target index (drawn in the "current" color). */
+  currentTargetIndex: number
+  /** Per-target completion result; only indices present here are drawn. */
+  completedTargets: Map<number, TargetVisualResult>
+  /** Active target indices in single-hand mode; the rest are grayed out. */
+  filteredTargetIndices: Set<number>
+}
+
 export class OsmdService {
   // ── OSMD instance (created in load, nulled in destroy) ──────────────
   private osmd: OpenSheetMusicDisplay | null = null
@@ -304,6 +321,54 @@ export class OsmdService {
           gn.setColor(color, OsmdService.COLOR_OPTS)
         } catch {
           // ignore
+        }
+      }
+    }
+  }
+
+  // ── Combined view state ────────────────────────────────────────────────
+
+  /** Palette owned by the service, not the React layer. */
+  private static readonly VIEW_COLORS = {
+    future: '#000000',
+    current: '#3b82f6',
+    correct: '#22c55e',
+    wrong: '#ef4444',
+    missed: '#9ca3af',
+    reference: '#d1d5db',
+  } as const
+
+  /**
+   * Apply the full practice view in one pass: reset, then draw completed /
+   * current coloring, then gray out non-active-hand reference notes.
+   *
+   * Replaces the two separate coloring effects the React wrapper used to
+   * run (completed/current + filtered-reference). The palette and the
+   * per-index policy live here so callers don't have to learn them.
+   */
+  applyPracticeViewState(state: PracticeViewState): void {
+    const colors = OsmdService.VIEW_COLORS
+    const { currentTargetIndex, completedTargets, filteredTargetIndices } = state
+
+    this.resetAllColors()
+
+    for (let i = 0; i < this.entries.length; i++) {
+      const completed = completedTargets.get(i)
+      if (completed === 'correct') {
+        this.colorPosition(i, colors.correct)
+      } else if (completed === 'wrong') {
+        this.colorPosition(i, colors.wrong)
+      } else if (completed === 'missed') {
+        this.colorPosition(i, colors.missed)
+      } else if (i === currentTargetIndex) {
+        this.colorPosition(i, colors.current)
+      }
+    }
+
+    if (filteredTargetIndices.size > 0) {
+      for (let i = 0; i < this.entries.length; i++) {
+        if (!filteredTargetIndices.has(i) && !completedTargets.has(i)) {
+          this.colorPosition(i, colors.reference)
         }
       }
     }
