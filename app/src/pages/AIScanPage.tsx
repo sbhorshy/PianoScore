@@ -7,7 +7,7 @@ import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert'
 import { Upload, File, CheckCircle2, AlertCircle, ScanLine, FileImage } from 'lucide-react'
 import { useScores } from '@/hooks/useScores'
 import { OcrTaskCard } from '@/components/OcrTaskCard'
-import { createOcrTask, fetchHealth } from '@/lib/api'
+import { createOcrTask, fetchHealth, ApiError } from '@/lib/api'
 
 type PageState = 'initial' | 'selected' | 'uploading' | 'success' | 'error'
 
@@ -82,9 +82,12 @@ export default function AIScanPage() {
       setOcrTaskId(taskId)
       setOcrFileName(file.name)
     } catch (err) {
-      // 409: 已有任务运行中
-      const msg = err instanceof Error ? err.message : '上传失败'
-      setOcrError(msg.includes('already running') ? '已有识别任务进行中，请等待完成或取消后再试。' : msg)
+      // 409: 已有任务运行中（用 status code 判断，比 substring 匹配 message 更稳健）
+      if (err instanceof ApiError && err.status === 409) {
+        setOcrError('已有识别任务进行中，请等待完成或取消后再试。')
+      } else {
+        setOcrError(err instanceof Error ? err.message : '上传失败')
+      }
     }
   }, [])
 

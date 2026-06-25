@@ -99,7 +99,7 @@ export type OcrTaskStatus =
   | { status: 'failed'; errorCode: OcrErrorCode; errorDetail: string | null }
 
 export interface OcrHealth {
-  ok: boolean
+  status: string
   ocr: { available: boolean; reason?: string }
 }
 
