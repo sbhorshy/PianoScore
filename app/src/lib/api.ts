@@ -1,9 +1,10 @@
 // ── Score data returned by the backend ───────────────────────────────────
 export interface ScoreData {
-  id: number
+  id: string
   title: string
   composer: string | null
   tempo: number
+  sourceFormat: string
   sourceXml: string
 }
 
@@ -12,7 +13,7 @@ export interface ScoreSummary {
   title: string
   composer: string | null
   tempo: number
-  noteCount: number
+  sourceFormat: string
 }
 
 export interface SessionRecord {
@@ -87,4 +88,35 @@ export async function recordSession(scoreId: string, s: NewSession): Promise<str
     }),
   )
   return data.id
+}
+
+// ── OCR (PDF/image recognition) ──────────────────────────────────────────
+export type OcrErrorCode = 'no_java' | 'no_audiveris' | 'engine_crash' | 'no_output' | 'low_confidence'
+
+export type OcrTaskStatus =
+  | { status: 'pending' | 'running'; inputFileName: string; elapsedMs: number }
+  | { status: 'done'; scoreId: string }
+  | { status: 'failed'; errorCode: OcrErrorCode; errorDetail: string | null }
+
+export interface OcrHealth {
+  status: string
+  ocr: { available: boolean; reason?: string }
+}
+
+export async function createOcrTask(file: File): Promise<{ taskId: string; status: string }> {
+  const form = new FormData()
+  form.append('file', file)
+  return handle<{ taskId: string; status: string }>(await fetch('/api/ocr', { method: 'POST', body: form }))
+}
+
+export async function fetchOcrTask(taskId: string): Promise<OcrTaskStatus> {
+  return handle<OcrTaskStatus>(await fetch(`/api/ocr/${taskId}`))
+}
+
+export async function cancelOcrTask(taskId: string): Promise<void> {
+  await handle<{ deleted: boolean }>(await fetch(`/api/ocr/${taskId}`, { method: 'DELETE' }))
+}
+
+export async function fetchHealth(): Promise<OcrHealth> {
+  return handle<OcrHealth>(await fetch('/api/health'))
 }

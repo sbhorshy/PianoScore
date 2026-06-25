@@ -1,11 +1,13 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent } from '@/components/ui/card'
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
 import { Alert, AlertTitle, AlertDescription } from '@/components/ui/alert'
-import { Upload, File, CheckCircle2, AlertCircle } from 'lucide-react'
+import { Upload, File, CheckCircle2, AlertCircle, ScanLine, FileImage } from 'lucide-react'
 import { useScores } from '@/hooks/useScores'
+import { OcrTaskCard } from '@/components/OcrTaskCard'
+import { createOcrTask, fetchHealth, ApiError } from '@/lib/api'
 
 type PageState = 'initial' | 'selected' | 'uploading' | 'success' | 'error'
 
@@ -33,6 +35,73 @@ export default function AIScanPage() {
   const fileInputRef = useRef<HTMLInputElement>(null)
   const xhrRef = useRef<XMLHttpRequest | null>(null)
   const { refresh } = useScores()
+
+  // ── OCR 扫描识别区状态 ──
+  const [ocrAvailable, setOcrAvailable] = useState<boolean | null>(null)  // null=未检测
+  const [ocrReason, setOcrReason] = useState<string | null>(null)
+  const [ocrTaskId, setOcrTaskId] = useState<string | null>(null)
+  const [ocrFileName, setOcrFileName] = useState<string>('')
+  const [ocrError, setOcrError] = useState<string | null>(null)
+  const ocrFileRef = useRef<HTMLInputElement>(null)
+  const pendingOcrFileRef = useRef<File | null>(null)  // 重试用
+
+  // 挂载时 ping health 预判 OCR 可用性
+  useEffect(() => {
+    let cancelled = false
+    fetchHealth()
+      .then((h) => {
+        if (cancelled) return
+        setOcrAvailable(h.ocr.available)
+        if (!h.ocr.available && h.ocr.reason) {
+          setOcrReason(h.ocr.reason)
+        }
+      })
+      .catch(() => {
+        if (cancelled) return
+        setOcrAvailable(false)
+        setOcrReason('后端不可达')
+      })
+    return () => { cancelled = true }
+  }, [])
+
+  const handleOcrFile = useCallback(async (file: File | null) => {
+    if (!file) return
+    const name = file.name.toLowerCase()
+    if (!['.pdf', '.png', '.jpg', '.jpeg'].some((ext) => name.endsWith(ext))) {
+      setOcrError('不支持的格式。请选择 PDF、PNG 或 JPG。')
+      return
+    }
+    if (file.size > 20 * 1024 * 1024) {
+      setOcrError('文件大小超过 20MB 限制。')
+      return
+    }
+    setOcrError(null)
+    pendingOcrFileRef.current = file
+    try {
+      const { taskId } = await createOcrTask(file)
+      setOcrTaskId(taskId)
+      setOcrFileName(file.name)
+    } catch (err) {
+      // 409: 已有任务运行中（用 status code 判断，比 substring 匹配 message 更稳健）
+      if (err instanceof ApiError && err.status === 409) {
+        setOcrError('已有识别任务进行中，请等待完成或取消后再试。')
+      } else {
+        setOcrError(err instanceof Error ? err.message : '上传失败')
+      }
+    }
+  }, [])
+
+  const handleOcrRetry = useCallback(() => {
+    setOcrTaskId(null)
+    const f = pendingOcrFileRef.current
+    if (f) void handleOcrFile(f)
+  }, [handleOcrFile])
+
+  const handleOcrDismiss = useCallback(() => {
+    setOcrTaskId(null)
+    setOcrFileName('')
+    refresh()
+  }, [refresh])
 
   const reset = useCallback(() => {
     setPageState('initial')
@@ -311,6 +380,73 @@ export default function AIScanPage() {
               </motion.div>
             )}
           </AnimatePresence>
+        </CardContent>
+      </Card>
+
+      {/* ── 扫描识别区 ── */}
+      <Card className="mt-6">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <ScanLine className="h-5 w-5" />
+            扫描识别（PDF / 图片）
+          </CardTitle>
+          <CardDescription>
+            上传乐谱 PDF 或图片，通过 Audiveris OCR 引擎自动识别为可练习的乐谱。
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {/* 降级提示 */}
+          {ocrAvailable === false && (
+            <Alert variant="default">
+              <AlertCircle className="h-4 w-4" />
+              <AlertTitle>PDF 识别不可用</AlertTitle>
+              <AlertDescription>
+                {ocrReason === 'no_java'
+                  ? '本机后端未检测到 Java 环境。桌面版已内置，Web 版需本机安装 JDK 17+ 并启动后端。'
+                  : ocrReason === '后端不可达'
+                    ? 'PDF 识别需要本地后端运行。如果这是网页版，请确保 localhost:8000 已启动。'
+                    : '识别引擎不可用，请检查环境配置。'}
+              </AlertDescription>
+            </Alert>
+          )}
+
+          {/* 上传区（OCR 可用或未检测时显示） */}
+          {ocrAvailable !== false && (
+            <>
+              <div
+                className="border-2 border-dashed rounded-lg p-8 text-center cursor-pointer transition-colors hover:border-muted-foreground/50 border-muted-foreground/25"
+                onClick={() => ocrFileRef.current?.click()}
+              >
+                <FileImage className="mx-auto h-10 w-10 text-muted-foreground" />
+                <p className="mt-3 text-sm font-medium">点击上传或拖拽 PDF / 图片</p>
+                <p className="mt-1 text-xs text-muted-foreground">PDF、PNG、JPG（最大 20MB）</p>
+                <input
+                  ref={ocrFileRef}
+                  type="file"
+                  accept=".pdf,.png,.jpg,.jpeg"
+                  className="hidden"
+                  onChange={(e) => void handleOcrFile(e.target.files?.[0] ?? null)}
+                />
+              </div>
+
+              {ocrError && (
+                <Alert variant="destructive">
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertDescription>{ocrError}</AlertDescription>
+                </Alert>
+              )}
+
+              {/* 任务卡片 */}
+              {ocrTaskId && (
+                <OcrTaskCard
+                  taskId={ocrTaskId}
+                  fileName={ocrFileName}
+                  onRetry={handleOcrRetry}
+                  onDismiss={handleOcrDismiss}
+                />
+              )}
+            </>
+          )}
         </CardContent>
       </Card>
     </div>
