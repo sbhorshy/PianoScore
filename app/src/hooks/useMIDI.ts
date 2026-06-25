@@ -10,12 +10,6 @@ interface UseMIDIResult {
   connect: (device: MIDIInput) => void
   disconnect: () => void
   lastNoteEvent: NoteEvent | null
-  // Output capabilities
-  outputs: MIDIOutput[]
-  selectedOutput: MIDIOutput | null
-  connectOutput: (output: MIDIOutput) => void
-  sendNoteOn: (midi: number, velocity?: number) => void
-  sendNoteOff: (midi: number) => void
 }
 
 export function useMIDI(): UseMIDIResult {
@@ -25,10 +19,6 @@ export function useMIDI(): UseMIDIResult {
   const [selectedDevice, setSelectedDevice] = useState<MIDIInput | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [lastNoteEvent, setLastNoteEvent] = useState<NoteEvent | null>(null)
-
-  // Output state
-  const [outputs, setOutputs] = useState<MIDIOutput[]>([])
-  const [selectedOutput, setSelectedOutput] = useState<MIDIOutput | null>(null)
 
   useEffect(() => {
     if (!navigator.requestMIDIAccess) {
@@ -57,13 +47,6 @@ export function useMIDI(): UseMIDIResult {
       inputs.push(input)
     })
     setDevices(inputs)
-
-    // Also enumerate outputs
-    const midiOutputs: MIDIOutput[] = []
-    access.outputs.forEach((output) => {
-      midiOutputs.push(output)
-    })
-    setOutputs(midiOutputs)
   }
 
   const handleMIDIMessage = useCallback((event: MIDIMessageEvent) => {
@@ -115,30 +98,6 @@ export function useMIDI(): UseMIDIResult {
     }
   }, [selectedDevice])
 
-  // ── Output methods ──────────────────────────────────────────────────────
-
-  const connectOutput = useCallback((output: MIDIOutput) => {
-    setSelectedOutput(output)
-  }, [])
-
-  const sendNoteOn = useCallback(
-    (midi: number, velocity: number = 127) => {
-      if (selectedOutput) {
-        selectedOutput.send([0x90, midi & 0x7f, velocity & 0x7f])
-      }
-    },
-    [selectedOutput]
-  )
-
-  const sendNoteOff = useCallback(
-    (midi: number) => {
-      if (selectedOutput) {
-        selectedOutput.send([0x80, midi & 0x7f, 0x00])
-      }
-    },
-    [selectedOutput]
-  )
-
   return {
     isSupported,
     isConnected,
@@ -148,11 +107,5 @@ export function useMIDI(): UseMIDIResult {
     connect,
     disconnect,
     lastNoteEvent,
-    // Outputs
-    outputs,
-    selectedOutput,
-    connectOutput,
-    sendNoteOn,
-    sendNoteOff,
   }
 }

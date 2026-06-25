@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import type { PracticeMode, PracticeStyle, ScoringTarget } from '@/types/music'
 import type { ScoringConfig } from '@/scoring/types'
 import type { AudioOutput } from '@/services/audio'
-import { WebAudioSynth, ToneJsOutput, MidiOutput } from '@/services/audio'
+import { WebAudioSynth, ToneJsOutput } from '@/services/audio'
 import { Card, CardHeader, CardTitle, CardDescription, CardContent, CardFooter } from '@/components/ui/card'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -99,11 +99,6 @@ export default function PracticePage() {
   const [audioReady, setAudioReady] = useState(false)
 
   const getAudioOutput = useCallback((): AudioOutput | null => {
-    // If user has a MIDI output connected, use that (sample-accurate scheduling
-    // via MidiOutput so dense passages keep their rhythm).
-    if (midi.selectedOutput) {
-      return new MidiOutput(midi.selectedOutput)
-    }
     // Prefer ToneJsOutput if loaded
     if (toneRef.current?.isLoaded) {
       return toneRef.current
@@ -113,15 +108,12 @@ export default function PracticePage() {
       synthRef.current = new WebAudioSynth()
     }
     return synthRef.current
-  }, [midi.selectedOutput])
+  }, [])
 
   /** Load ToneJsOutput for high-quality piano playback. */
   const ensureToneJs = useCallback(async (): Promise<AudioOutput | null> => {
     // If already loaded, return it
     if (toneRef.current?.isLoaded) return toneRef.current
-
-    // If a MIDI output is connected, skip ToneJs loading entirely
-    if (midi.selectedOutput) return getAudioOutput()
 
     setAudioLoading(true)
     try {
@@ -143,7 +135,7 @@ export default function PracticePage() {
     } finally {
       setAudioLoading(false)
     }
-  }, [midi.selectedOutput, getAudioOutput])
+  }, [getAudioOutput])
 
   // Clean up synth on unmount
   useEffect(() => {
