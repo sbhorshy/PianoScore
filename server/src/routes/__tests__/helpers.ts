@@ -43,6 +43,20 @@ export function createTestApp(): TestApp {
       practice_mode TEXT NOT NULL DEFAULT 'both',
       completed INTEGER NOT NULL DEFAULT 1
     );
+
+    CREATE TABLE ocr_tasks (
+      id TEXT PRIMARY KEY,
+      status TEXT NOT NULL,
+      input_format TEXT NOT NULL,
+      input_file_name TEXT NOT NULL,
+      input_path TEXT,
+      score_id TEXT,
+      error_code TEXT,
+      error_detail TEXT,
+      created_at INTEGER NOT NULL DEFAULT (unixepoch()),
+      started_at INTEGER,
+      completed_at INTEGER
+    );
   `)
 
   const app = new Hono()

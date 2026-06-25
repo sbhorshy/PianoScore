@@ -27,5 +27,23 @@ export const sessions = sqliteTable('sessions', {
   completed: integer('completed', { mode: 'boolean' }).notNull().default(true),
 })
 
+// OCR 识别任务。done 时 scoreId 指向入库的 scores 行（软关联，不加 FK）。
+export const ocrTasks = sqliteTable('ocr_tasks', {
+  id: text('id').primaryKey(),
+  status: text('status', {
+    enum: ['pending', 'running', 'done', 'failed'],
+  }).notNull(),
+  inputFormat: text('input_format').notNull(),
+  inputFileName: text('input_file_name').notNull(),
+  inputPath: text('input_path'),
+  scoreId: text('score_id'),
+  errorCode: text('error_code'),
+  errorDetail: text('error_detail'),
+  createdAt: integer('created_at').notNull().default(sql`(unixepoch())`),
+  startedAt: integer('started_at'),
+  completedAt: integer('completed_at'),
+})
+
 export type ScoreRow = typeof scores.$inferSelect
 export type SessionRow = typeof sessions.$inferSelect
+export type OcrTaskRow = typeof ocrTasks.$inferSelect
