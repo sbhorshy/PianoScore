@@ -21,10 +21,9 @@ import { useSettings } from '@/hooks/useSettings'
 import { usePractice } from '@/hooks/usePractice'
 import { usePlayback } from '@/hooks/usePlayback'
 import { useMIDI } from '@/hooks/useMIDI'
-import { useClock } from '@/hooks/useClock'
+import { useTempoPosition } from '@/hooks/useTempoPosition'
 import { recordSession } from '@/lib/api'
 import { DEFAULT_SCORING_CONFIG } from '@/scoring/engine'
-import { buildTargetTimeline, tempoTick, initPositionState, type PositionState, type TargetTimeline } from '@/scoring/position'
 import { filterTargetsByRange, type MeasureRange } from '@/scoring/rangeFilter'
 import { OsmdScore } from '@/components/OsmdScore'
 import type { OsmdService } from '@/services/osmd'
@@ -216,44 +215,24 @@ export default function PracticePage() {
 
   // ── Follow mode state ──────────────────────────────────────────────────
   const [followRunning, setFollowRunning] = useState(false)
-  const [followPosition, setFollowPosition] = useState<PositionState>(initPositionState)
-  const prevFollowIndexRef = useRef(0)
-  const settleTargetCbRef = useRef(settleTargetCb)
-  settleTargetCbRef.current = settleTargetCb
+  const follow = useTempoPosition({
+    targets: rangeFilteredTargets,
+    tempo: effectiveTempo,
+    running: practiceStyle === 'follow' && followRunning,
+    onSettleTarget: settleTargetCb,
+  })
+  // Track last-settled index so Stop can settle the in-flight target.
+  const lastFollowSettledRef = useRef(0)
   const rangeFilteredTargetsRef = useRef(rangeFilteredTargets)
   rangeFilteredTargetsRef.current = rangeFilteredTargets
 
-  // Build timeline for follow mode
-  const followTimeline: TargetTimeline = useMemo(
-    () => buildTargetTimeline(rangeFilteredTargets),
-    [rangeFilteredTargets],
-  )
-
-  // Clock tick handler for follow mode
-  const onFollowTick = useCallback((elapsedMs: number) => {
-    setFollowPosition((prev) => {
-      const next = tempoTick(prev, followTimeline, effectiveTempo, elapsedMs)
-
-      // When position advances, settle the previous target
-      if (next.targetIndex !== prev.targetIndex) {
-        // Settle all targets we passed through
-        for (let i = prev.targetIndex; i < next.targetIndex; i++) {
-          const target = rangeFilteredTargetsRef.current[i]
-          if (target) {
-            settleTargetCbRef.current(target)
-          }
-        }
-        prevFollowIndexRef.current = next.targetIndex
-      }
-
-      return next
-    })
-  }, [followTimeline, effectiveTempo])
-
-  // Follow mode clock
-  useClock({ tempo: effectiveTempo, running: followRunning, onTick: onFollowTick })
-
   const isFollowRunning = practiceStyle === 'follow' && followRunning
+
+  // Track the last index settled by the hook's tick, so Stop settles only the
+  // in-flight targets it has not yet crossed (mirrors pre-refactor behaviour).
+  useEffect(() => {
+    lastFollowSettledRef.current = follow.position.targetIndex
+  }, [follow.position.targetIndex])
 
   // Handle listen button click: load ToneJsOutput, then start playback.
   const handleListenPlay = useCallback(async () => {
@@ -267,7 +246,7 @@ export default function PracticePage() {
   const activePosition = practiceStyle === 'listen'
     ? playback.currentPosition
     : practiceStyle === 'follow'
-      ? followPosition
+      ? follow.position
       : positionState
 
   const { correct, wrong } = scoringState
@@ -323,7 +302,7 @@ export default function PracticePage() {
     // Stop follow clock if switching away from follow
     if (practiceStyle === 'follow') {
       setFollowRunning(false)
-      setFollowPosition(initPositionState())
+      follow.reset()
     }
     reset()
     setAudioLoading(false)
@@ -347,15 +326,15 @@ export default function PracticePage() {
   // ── Loop behavior: follow mode ────────────────────────────────────────
   useEffect(() => {
     if (practiceStyle === 'follow' && followRunning && repeatOn) {
-      const isAtEnd = followPosition.targetIndex >= rangeFilteredTargets.length
+      const isAtEnd = follow.position.targetIndex >= rangeFilteredTargets.length
       if (isAtEnd && rangeFilteredTargets.length > 0) {
         // Reset position and scoring, keep running
         reset()
-        setFollowPosition(initPositionState())
-        prevFollowIndexRef.current = 0
+        follow.reset()
+        lastFollowSettledRef.current = 0
       }
     }
-  }, [practiceStyle, followRunning, followPosition.targetIndex, repeatOn, rangeFilteredTargets.length, reset])
+  }, [practiceStyle, followRunning, follow.position.targetIndex, repeatOn, rangeFilteredTargets.length, reset, follow])
 
   // ── Session recording ────────────────────────────────────────────────
   const reportedRef = useRef(false)
@@ -937,8 +916,8 @@ export default function PracticePage() {
               >
                 <Button size="lg" onClick={() => {
                   reset()
-                  setFollowPosition(initPositionState())
-                  prevFollowIndexRef.current = 0
+                  follow.reset()
+                  lastFollowSettledRef.current = 0
                   setFollowRunning(true)
                 }}>
                   <Users className="h-5 w-5" />
@@ -956,13 +935,13 @@ export default function PracticePage() {
                 <Button size="lg" variant="destructive" onClick={() => {
                   setFollowRunning(false)
                   // Settle any remaining targets up to current position
-                  for (let i = prevFollowIndexRef.current; i < followPosition.targetIndex; i++) {
+                  for (let i = lastFollowSettledRef.current; i < follow.position.targetIndex; i++) {
                     const target = rangeFilteredTargetsRef.current[i]
                     if (target) {
-                      settleTargetCbRef.current(target)
+                      settleTargetCb(target)
                     }
                   }
-                  prevFollowIndexRef.current = followPosition.targetIndex
+                  lastFollowSettledRef.current = follow.position.targetIndex
                 }}>
                   <Square className="h-5 w-5" />
                   Stop
