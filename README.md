@@ -155,6 +155,14 @@ npm run tauri-build   # 产出各平台安装包
 
 > Tauri v1（非 v2）。Linux 需 `libgtk-3-dev libwebkit2gtk-4.0-dev libsoup2.4-dev librsvg2-dev`；macOS 需 Xcode Command Line Tools；Windows 需 WebView2 runtime（Win10/11 一般已内置）。
 
+## 🔧 第三方组件 (Third-Party Components)
+
+PianoScore 通过子进程（`child_process.spawn`）方式集成以下 OMR 引擎，作为独立工作调用，不修改其源码：
+
+- **[Audiveris](https://github.com/Audiveris/audiveris)** (AGPL-3.0)：乐谱图像识别。PianoScore 不链接 Audiveris 代码，仅通过文件系统交换数据（输入 PDF → 输出 MusicXML）。许可证与源码获取详见 `LICENSE-THIRD-PARTY.md`。
+
+> AGPL-3.0 是强 copyleft 许可证。本项目**假设**进程隔离不触发传染（GPL/AGPL 社区惯例），从而保留 MIT 许可——但这属于项目假设而非确定法律结论，商业部署请咨询法务确认。
+
 ## 📚 相关文档
 
 | 文档 | 内容 |
